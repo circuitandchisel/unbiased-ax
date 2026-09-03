@@ -26,7 +26,7 @@ Two rules the model must know:
 | `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in), `geometry?`, `full?` | `{tree|diff, count, truncated}` |
 | `find` | `app`, `role?`, `title?` (substring, also matches value) | `{matches:[lines], count}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces) | `{ok, diff}` |
-| `setValue` | `app`, `id`, `value` | `{ok, diff}` |
+| `setValue` | `app`, `id`, `value`, `keepFront?` (default true — restore whatever app was in front) | `{ok, diff}` |
 | `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first — without it the key lands wherever focus already is) | `{ok, diff}` — a real key event to the app, for what AX has no verb for (commit an omnibox after `setValue`) |
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG at 32pt, for showing which app a step touched |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space |

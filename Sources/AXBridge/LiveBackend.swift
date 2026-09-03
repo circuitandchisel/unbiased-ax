@@ -132,7 +132,28 @@ public final class LiveBackend: Backend {
     return (a, el)
   }
 
-  public func perform(app: String, id: Int, action: String) throws {
+  /// Run `body`, then put back whatever app was in front if it changed.
+  /// Measured: acting on a browser on another Space took the user there on
+  /// every single action, which is the opposite of working in the background.
+  private func keepingFront<T>(_ keepFront: Bool, _ body: () throws -> T) rethrows -> T {
+    guard keepFront else { return try body() }
+    let before = NSWorkspace.shared.frontmostApplication
+    let result = try body()
+    guard let before, before.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+      return result
+    }
+    // A short settle: the app we acted on may still be coming forward, and
+    // reactivating into that race just loses.
+    usleep(120_000)
+    before.activate(options: [])
+    return result
+  }
+
+  public func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
+    try keepingFront(keepFront) { try performInner(app: app, id: id, action: action) }
+  }
+
+  private func performInner(app: String, id: Int, action: String) throws {
     let (_, el) = try element(app, id)
     let ax: String
     switch action {
@@ -179,7 +200,11 @@ public final class LiveBackend: Backend {
     up.postToPid(a.processIdentifier)
   }
 
-  public func setValue(app: String, id: Int, value: String) throws {
+  public func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
+    try keepingFront(keepFront) { try setValueInner(app: app, id: id, value: value) }
+  }
+
+  private func setValueInner(app: String, id: Int, value: String) throws {
     let (_, el) = try element(app, id)
     // Focus first: Chromium accepts a value on an unfocused omnibox but does
     // not commit it, so the address changes and nothing happens.

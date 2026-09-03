@@ -81,12 +81,12 @@ public final class Dispatcher {
     case "act":
       let id = try int(p, "id"); let action = try string(p, "action")
       try known(app, id)
-      try backend.perform(app: app, id: id, action: action)
+      try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? true)
       return try afterAction(app, p)
     case "setValue":
       let id = try int(p, "id"); let value = try string(p, "value")
       try known(app, id)
-      try backend.setValue(app: app, id: id, value: value)
+      try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? true)
       return try afterAction(app, p)
     case "key":
       let key = try string(p, "key").lowercased()

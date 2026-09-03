@@ -42,8 +42,13 @@ final class FakeBackend: Backend {
     if let id = focusId { focused.append((app, id)) }
     keys.append((app, key))
   }
-  func perform(app: String, id: Int, action: String) throws { acted.append((app, id, action)) }
-  func setValue(app: String, id: Int, value: String) throws { setValues.append((app, id, value)) }
+  var keepFrontSeen: [Bool] = []
+  func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
+    keepFrontSeen.append(keepFront); acted.append((app, id, action))
+  }
+  func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
+    keepFrontSeen.append(keepFront); setValues.append((app, id, value))
+  }
   func raise(app: String, windowId: Int?) throws {}
 }
 
@@ -193,6 +198,18 @@ func runDispatcherTests() {
   test("an app with no icon is an error, not an empty string") {
     let b = FakeBackend(); b.iconPNG = nil
     try expect(call(Dispatcher(backend: b), #"{"id":41,"method":"icon","params":{"app":"Nope"}}"#).contains(#""code":"no_such_app""#))
+  }
+  test("keepFront rides with act and setValue, and defaults on") {
+    // Measured, reported by the user: the screen switched to the browser on
+    // EVERY action, not just the raise. Pressing an element and setting a
+    // value both pull their app forward, so the bridge has to put back
+    // whatever was in front — otherwise a ten-action task is ten switches.
+    let b = FakeBackend(); let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":50,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":51,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
+    try expectEqual(b.keepFrontSeen.last, true, "default is to keep the user where they are")
+    _ = call(d, #"{"id":52,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x","keepFront":false}}"#)
+    try expectEqual(b.keepFrontSeen.last, false, "a caller can ask for the app to stay in front")
   }
   test("apps lists running apps with the frontmost marked") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":18,"method":"apps"}"#)

@@ -74,7 +74,10 @@ public protocol Backend: AnyObject {
   /// reads far better beside Brave's own icon than beside a terminal glyph.
   func appIcon(app: String) throws -> Data
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
-  func perform(app: String, id: Int, action: String) throws
+  /// `keepFront` restores whatever application was in front before the action.
+  /// Pressing an element or setting a value pulls its app forward — and when
+  /// that app lives on another Space, forward means the user is taken there.
+  func perform(app: String, id: Int, action: String, keepFront: Bool) throws
   /// A named key, delivered to the app as a real key event. For what the
   /// Accessibility API has no verb for: committing an omnibox, dismissing a
   /// sheet, moving through a list.
@@ -82,6 +85,6 @@ public protocol Backend: AnyObject {
   /// means it to. Without it the key goes wherever keyboard focus already is,
   /// which is how "space to play a video" typed spaces into an address bar.
   func pressKey(app: String, key: String, focusId: Int?) throws
-  func setValue(app: String, id: Int, value: String) throws
+  func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   func raise(app: String, windowId: Int?) throws
 }
