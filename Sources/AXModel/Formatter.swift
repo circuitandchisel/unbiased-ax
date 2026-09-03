@@ -16,7 +16,7 @@ public enum Formatter {
     if let v = a.value, !v.isEmpty { parts.append("= \(clip(v))") }
     if a.focused { parts.append("[focused]") }
     if a.selected { parts.append("[selected]") }
-    if !a.enabled { parts.append("[disabled]") }
+    if !a.enabled && Role.isInteractive(a.role) { parts.append("[disabled]") }
     if !a.actions.isEmpty { parts.append("{" + a.actions.joined(separator: ",") + "}") }
     if geometry && a.geometryKnown { parts.append("@\(a.x),\(a.y) \(a.width)x\(a.height)") }
     return parts.joined(separator: " ")

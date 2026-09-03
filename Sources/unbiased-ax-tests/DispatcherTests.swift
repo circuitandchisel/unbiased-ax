@@ -6,6 +6,7 @@ final class FakeBackend: Backend {
   var acted: [(app: String, id: Int, action: String)] = []
   var setValues: [(app: String, id: Int, value: String)] = []
   var lastOptions: SnapshotOptions?
+  var offscreen = 0
   var registries: [String: IdRegistry] = [:]
   let tree = group("w", [button("w/ok", "OK"),
                          FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))],
@@ -27,6 +28,7 @@ final class FakeBackend: Backend {
     defer { registries[app] = reg }
     return Snapshot.build(root: tree, source: FakeSource(), registry: &reg, options: options)
   }
+  func offscreenWindows(app: String) throws -> Int { offscreen }
   func perform(app: String, id: Int, action: String) throws { acted.append((app, id, action)) }
   func setValue(app: String, id: Int, value: String) throws { setValues.append((app, id, value)) }
   func raise(app: String, windowId: Int?) throws {}
@@ -114,6 +116,16 @@ func runDispatcherTests() {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":17,"method":"windows","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains("YouTube - Brave"), out)
     try expect(out.contains("1200x800"), out)
+  }
+  test("windows reports how many are on another Space, and says to raise first") {
+    // Measured: AXWindows lists only the current Space. Brave had 10 windows
+    // and 0 on screen, so every tree of it was its menu bar and nothing else.
+    let b = FakeBackend(); b.offscreen = 10
+    let out = call(Dispatcher(backend: b), #"{"id":17,"method":"windows","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""offscreen":10"#), out)
+    try expect(out.contains("raise"), out)
+    b.offscreen = 0
+    try expect(!call(Dispatcher(backend: b), #"{"id":18,"method":"windows","params":{"app":"Brave Browser"}}"#).contains("hint"))
   }
   test("apps lists running apps with the frontmost marked") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":18,"method":"apps"}"#)

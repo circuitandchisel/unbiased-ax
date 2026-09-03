@@ -48,7 +48,9 @@ public struct Snapshot: Equatable {
     func visit(_ node: S.Node, depth: Int) {
       if nodes.count >= options.maxElements { truncated = true; return }
       guard let attrs = source.attributes(of: node) else { return }
-      if attrs.geometryKnown && (attrs.width == 0 || attrs.height == 0) { return }
+      // Never prune the root: the caller asked for exactly this element, and
+      // Finder's application element reports a KNOWN 0x0 (measured).
+      if depth > 0 && attrs.geometryKnown && (attrs.width == 0 || attrs.height == 0) { return }
 
       let structural = !Role.isInteractive(attrs.role)
       let untitled = (attrs.title ?? "").isEmpty && (attrs.value ?? "").isEmpty

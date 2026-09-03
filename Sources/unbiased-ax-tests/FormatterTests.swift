@@ -35,6 +35,12 @@ func runFormatterTests() {
   test("an empty snapshot says so instead of returning nothing") {
     try expectEqual(Formatter.render(Snapshot(nodes: [], truncated: false), geometry: false), "(no elements)")
   }
+  test("[disabled] is shown for controls only — an application or scroll area reporting enabled=false is noise") {
+    // Measured: Finder's application root and its desktop scroll area both
+    // report AXEnabled=false. Neither can be "enabled"; the flag means nothing there.
+    try expectEqual(Formatter.line(node(1, 0, Attributes(role: "application", title: "Finder", enabled: false)), geometry: false), "1 application \"Finder\"")
+    try expectEqual(Formatter.line(node(2, 1, Attributes(role: "button", title: "OK", enabled: false)), geometry: false), "2   button \"OK\" [disabled]")
+  }
   test("a whole snapshot joins lines and reports truncation on its own line") {
     let snap = Snapshot(nodes: [node(1, 0, Attributes(role: "window", title: "W"))], truncated: true)
     try expectEqual(Formatter.render(snap, geometry: false),

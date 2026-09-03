@@ -65,6 +65,10 @@ public protocol Backend: AnyObject {
   func isTrusted() -> Bool
   func apps() -> [AppInfo]
   func windows(app: String) throws -> [WindowInfo]
+  /// Windows the window server knows about that the Accessibility API does
+  /// not list — on another Space, or hidden. AXWindows only sees the current
+  /// Space, so without this a model cannot tell "no windows" from "elsewhere".
+  func offscreenWindows(app: String) throws -> Int
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
   func perform(app: String, id: Int, action: String) throws
   func setValue(app: String, id: Int, value: String) throws

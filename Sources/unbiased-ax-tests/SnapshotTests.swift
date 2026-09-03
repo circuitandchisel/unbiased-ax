@@ -60,6 +60,12 @@ func runSnapshotTests() {
     let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
     try expectEqual(snap.nodes.map(\.attributes.title), ["Finder", "OK"])
   }
+  test("a root that reports a known 0x0 is still the root — Finder does exactly this") {
+    let root = FakeNode("app", Attributes(role: "application", title: "Finder", width: 0, height: 0), [button("app/ok", "OK")])
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
+    try expectEqual(snap.nodes.map(\.attributes.title), ["Finder", "OK"])
+  }
   test("interactive-only mode keeps windows and controls, drops decoration") {
     let root = group("w", [FakeNode("w/t", Attributes(role: "text", title: "Hello", width: 50, height: 12)),
                            button("w/ok", "OK")], title: "Save")

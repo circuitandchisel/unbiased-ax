@@ -1,3 +1,5 @@
+import CoreGraphics
+import Foundation
 import AppKit
 import ApplicationServices
 import AXModel
@@ -42,6 +44,9 @@ public final class LiveBackend: Backend {
     let root = appElement(a)
     var v: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(root.ref, kAXWindowsAttribute as CFString, &v)
+    if LiveSource.debug {
+      FileHandle.standardError.write("[ax] AXWindows for \(a.localizedName ?? app): AXError \(err.rawValue), \(axElements(v).count) element(s)\n".data(using: .utf8)!)
+    }
     if err == .cannotComplete { throw BridgeError.timeout("\(a.localizedName ?? app) did not list its windows") }
     guard err == .success else { return [] }
     let src = LiveSource()
@@ -61,6 +66,16 @@ public final class LiveBackend: Backend {
     return out
   }
 
+  public func offscreenWindows(app: String) throws -> Int {
+    let a = try resolve(app)
+    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+    return list.filter {
+      ($0[kCGWindowOwnerPID as String] as? Int32) == a.processIdentifier
+        && (($0[kCGWindowLayer as String] as? Int) ?? 1) == 0
+        && !(($0[kCGWindowIsOnscreen as String] as? Bool) ?? false)
+    }.count
+  }
+
   public func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     let a = try resolve(app)
     let root = appElement(a)
@@ -75,6 +90,9 @@ public final class LiveBackend: Backend {
       // Silent emptiness hid this once already (Finder returned count 0 with
       // no explanation). Name the code so the next report is diagnosable.
       throw BridgeError.actionFailed("\(a.localizedName ?? app) did not answer the Accessibility API (AXError \(probeErr.rawValue)). -25204 is cannotComplete: the app is busy, or is not accessibility-enabled; -25211 is notImplemented; -25201 is invalid element.")
+    }
+    if LiveSource.debug, let at = LiveSource(appRoot: root).attributes(of: root) {
+      FileHandle.standardError.write("[ax] root: role=\(at.role) title=\(at.title ?? "-") size=\(at.width)x\(at.height) geometryKnown=\(at.geometryKnown) children=\(LiveSource(appRoot: root).children(of: root).count)\n".data(using: .utf8)!)
     }
     var reg = registries[a.processIdentifier] ?? IdRegistry()
     let snap = Snapshot.build(root: root, source: LiveSource(appRoot: root), registry: &reg, options: options)
@@ -98,6 +116,7 @@ public final class LiveBackend: Backend {
     case "press": ax = kAXPressAction
     case "raise": ax = kAXRaiseAction
     case "show menu": ax = kAXShowMenuAction
+    case "confirm": ax = kAXConfirmAction   // commits a text field: Chromium's omnibox needs this, not press
     case "focus":
       let err = AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
       guard err == .success else { throw BridgeError.actionFailed("focus failed (AXError \(err.rawValue))") }
@@ -129,6 +148,16 @@ public final class LiveBackend: Backend {
     // honoured once the app is active. This works across Spaces, which is the
     // whole reason the screenshot approach lost Brave.
     a.activate(options: [])
+    // Activation switches Spaces asynchronously. Snapshotting before the switch
+    // lands sees the menu bar and nothing else (measured), so wait — briefly —
+    // for a window to become listable.
+    let root = appElement(a)
+    let deadline = Date().addingTimeInterval(2.0)
+    while Date() < deadline {
+      var v: CFTypeRef?
+      if AXUIElementCopyAttributeValue(root.ref, kAXWindowsAttribute as CFString, &v) == .success, !axElements(v).isEmpty { break }
+      usleep(50_000)
+    }
     if let id = windowId {
       guard let w = elements[a.processIdentifier]?[id] else { throw BridgeError.noSuchWindow(id) }
       let err = AXUIElementPerformAction(w.ref, kAXRaiseAction as CFString)

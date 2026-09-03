@@ -44,7 +44,12 @@ public final class Dispatcher {
     switch method {
     case "windows":
       let wins = try backend.windows(app: app)
-      return ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n")]
+      let off = try backend.offscreenWindows(app: app)
+      var out: [String: Any] = ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n"), "offscreen": off]
+      if off > 0 {
+        out["hint"] = "\(off) window(s) are on another Space or hidden and cannot be read or acted on from here. Call raise for this app to bring them to this Space, then windows or tree again."
+      }
+      return out
     case "tree":
       let snap = try backend.snapshot(app: app, options: options(p))
       defer { last[app] = snap }

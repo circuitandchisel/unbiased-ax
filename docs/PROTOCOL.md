@@ -22,10 +22,10 @@ Two rules the model must know:
 |---|---|---|
 | `hello` | — | `{name, protocolVersion, trusted}` — works without Accessibility |
 | `apps` | — | `{apps:[{pid,name,bundleId,frontmost}]}` — works without Accessibility |
-| `windows` | `app` | `{windows:[…], text}` — one line per window: `1 "Title" @x,y wxh [focused]` |
+| `windows` | `app` | `{windows:[…], text, offscreen, hint?}` — one line per window; `offscreen` counts windows on another Space, which AX cannot list: `raise` first |
 | `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in), `geometry?`, `full?` | `{tree|diff, count, truncated}` |
 | `find` | `app`, `role?`, `title?` (substring, also matches value) | `{matches:[lines], count}` — a search, not a dump |
-| `act` | `app`, `id`, `action` (`press`, `raise`, `show menu`, `focus`, or any action shown in braces) | `{ok, diff}` |
+| `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces) | `{ok, diff}` |
 | `setValue` | `app`, `id`, `value` | `{ok, diff}` |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space |
 
