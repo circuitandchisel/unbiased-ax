@@ -28,6 +28,13 @@ func runFormatterTests() {
     let n = node(6, 1, Attributes(role: "tab", title: "Loser", actions: ["press"], enabled: false, selected: true))
     try expectEqual(Formatter.line(n, geometry: false), "6   tab \"Loser\" [selected] [disabled] {press}")
   }
+  test("geometry is omitted when unknown, even if asked for") {
+    var a = Attributes(role: "application", title: "Finder"); a.geometryKnown = false
+    try expectEqual(Formatter.line(node(1, 0, a), geometry: true), "1 application \"Finder\"")
+  }
+  test("an empty snapshot says so instead of returning nothing") {
+    try expectEqual(Formatter.render(Snapshot(nodes: [], truncated: false), geometry: false), "(no elements)")
+  }
   test("a whole snapshot joins lines and reports truncation on its own line") {
     let snap = Snapshot(nodes: [node(1, 0, Attributes(role: "window", title: "W"))], truncated: true)
     try expectEqual(Formatter.render(snap, geometry: false),

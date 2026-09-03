@@ -18,11 +18,12 @@ public enum Formatter {
     if a.selected { parts.append("[selected]") }
     if !a.enabled { parts.append("[disabled]") }
     if !a.actions.isEmpty { parts.append("{" + a.actions.joined(separator: ",") + "}") }
-    if geometry { parts.append("@\(a.x),\(a.y) \(a.width)x\(a.height)") }
+    if geometry && a.geometryKnown { parts.append("@\(a.x),\(a.y) \(a.width)x\(a.height)") }
     return parts.joined(separator: " ")
   }
 
   public static func render(_ s: Snapshot, geometry: Bool) -> String {
+    if s.nodes.isEmpty { return "(no elements)" }
     var lines = s.nodes.map { line($0, geometry: geometry) }
     if s.truncated { lines.append("… truncated: raise depth or maxElements, or use find") }
     return lines.joined(separator: "\n")

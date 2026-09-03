@@ -8,6 +8,9 @@ public struct Attributes: Equatable {
   public var enabled: Bool
   public var focused: Bool
   public var selected: Bool
+  /// False when the element reports no position/size at all — the application
+  /// root, for one. "Unknown" is not "zero": only known-zero is invisible.
+  public var geometryKnown: Bool = true
 
   public init(role: String, title: String? = nil, value: String? = nil,
               x: Int = 0, y: Int = 0, width: Int = 0, height: Int = 0,

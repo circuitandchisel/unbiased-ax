@@ -34,7 +34,8 @@ public struct Snapshot: Equatable {
 
   /// Depth-first, in reading order. Pruning rules, each measured against real
   /// trees rather than guessed:
-  ///  - zero-size elements and their subtrees are invisible: dropped.
+  ///  - KNOWN zero-size elements and their subtrees are invisible: dropped. An
+  ///    element with no geometry at all (the application root) is kept.
   ///  - an untitled structural container carries no information: its children
   ///    are hoisted to its depth. Chromium nests a dozen of these per control.
   ///  - interactiveOnly additionally drops structural leaves (text, images).
@@ -47,7 +48,7 @@ public struct Snapshot: Equatable {
     func visit(_ node: S.Node, depth: Int) {
       if nodes.count >= options.maxElements { truncated = true; return }
       guard let attrs = source.attributes(of: node) else { return }
-      if attrs.width == 0 || attrs.height == 0 { return }
+      if attrs.geometryKnown && (attrs.width == 0 || attrs.height == 0) { return }
 
       let structural = !Role.isInteractive(attrs.role)
       let untitled = (attrs.title ?? "").isEmpty && (attrs.value ?? "").isEmpty

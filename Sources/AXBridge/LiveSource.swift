@@ -31,21 +31,23 @@ struct LiveSource: ElementSource {
       return nil
     }
     func bool(_ i: Int) -> Bool { isAXValue(arr[i]) ? false : ((arr[i] as? Bool) ?? false) }
-    func point(_ i: Int) -> CGPoint {
+    // AXValueGetValue returns false for an error placeholder (or any AXValue of
+    // another type), which is how "this element has no geometry" is detected.
+    func point(_ i: Int) -> CGPoint? {
       var p = CGPoint.zero
-      if isAXValue(arr[i]) { AXValueGetValue(arr[i] as! AXValue, .cgPoint, &p) }
-      return p
+      return isAXValue(arr[i]) && AXValueGetValue(arr[i] as! AXValue, .cgPoint, &p) ? p : nil
     }
-    func size(_ i: Int) -> CGSize {
+    func size(_ i: Int) -> CGSize? {
       var s = CGSize.zero
-      if isAXValue(arr[i]) { AXValueGetValue(arr[i] as! AXValue, .cgSize, &s) }
-      return s
+      return isAXValue(arr[i]) && AXValueGetValue(arr[i] as! AXValue, .cgSize, &s) ? s : nil
     }
 
     let role = Role.normalize(str(0) ?? "AXUnknown", subrole: str(1))
     // Title, else description: many controls only carry the latter.
     let title = str(2).flatMap { $0.isEmpty ? nil : $0 } ?? str(4)
-    let p = point(5), s = size(6)
+    let p = point(5) ?? .zero
+    let sizeValue = size(6)
+    let s = sizeValue ?? .zero
 
     // Actions cost one more IPC per element; only interactive roles can have
     // any a model would use, so structural nodes skip the call.
@@ -56,9 +58,11 @@ struct LiveSource: ElementSource {
         actions = a.map(Role.normalizeAction)
       }
     }
-    return Attributes(role: role, title: title, value: str(3),
-                      x: Int(p.x), y: Int(p.y), width: Int(s.width), height: Int(s.height),
-                      actions: actions, enabled: bool(7), focused: bool(8), selected: bool(9))
+    var out = Attributes(role: role, title: title, value: str(3),
+                         x: Int(p.x), y: Int(p.y), width: Int(s.width), height: Int(s.height),
+                         actions: actions, enabled: bool(7), focused: bool(8), selected: bool(9))
+    out.geometryKnown = sizeValue != nil
+    return out
   }
 
   func children(of node: AXElement) -> [AXElement] {

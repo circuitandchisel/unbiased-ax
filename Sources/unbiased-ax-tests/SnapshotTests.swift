@@ -49,6 +49,17 @@ func runSnapshotTests() {
     let second = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
     try expectEqual(second.nodes.first { $0.attributes.title == "OK" }!.id, okId)
   }
+  test("unknown geometry is not zero geometry: the application root has none and must not be dropped") {
+    // Measured on real Finder and Brave: the tree came back with count 0,
+    // because AXUIElementCreateApplication's element has no AXSize at all and
+    // the size prune read "absent" as 0x0.
+    var rootAttrs = Attributes(role: "application", title: "Finder", width: 0, height: 0)
+    rootAttrs.geometryKnown = false
+    let root = FakeNode("app", rootAttrs, [button("app/ok", "OK")])
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
+    try expectEqual(snap.nodes.map(\.attributes.title), ["Finder", "OK"])
+  }
   test("interactive-only mode keeps windows and controls, drops decoration") {
     let root = group("w", [FakeNode("w/t", Attributes(role: "text", title: "Hello", width: 50, height: 12)),
                            button("w/ok", "OK")], title: "Save")
