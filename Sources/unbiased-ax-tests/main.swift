@@ -4,5 +4,6 @@ print("AXModel")
 test("protocol version is declared") { try expectEqual(protocolVersion, 1) }
 
 runElementTests()
+runIdRegistryTests()
 
 finish()
