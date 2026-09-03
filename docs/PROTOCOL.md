@@ -27,6 +27,7 @@ Two rules the model must know:
 | `find` | `app`, `role?`, `title?` (substring, also matches value) | `{matches:[lines], count}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces) | `{ok, diff}` |
 | `setValue` | `app`, `id`, `value` | `{ok, diff}` |
+| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`) | `{ok, diff}` — a real key event to the app, for what AX has no verb for (commit an omnibox after `setValue`) |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space |
 
 `app` is a name ("Brave Browser"), a name prefix ("Brave"), a bundle id, or a pid.

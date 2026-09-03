@@ -7,6 +7,7 @@ final class FakeBackend: Backend {
   var setValues: [(app: String, id: Int, value: String)] = []
   var lastOptions: SnapshotOptions?
   var offscreen = 0
+  var keys: [(app: String, key: String)] = []
   var registries: [String: IdRegistry] = [:]
   let tree = group("w", [button("w/ok", "OK"),
                          FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))],
@@ -29,6 +30,7 @@ final class FakeBackend: Backend {
     return Snapshot.build(root: tree, source: FakeSource(), registry: &reg, options: options)
   }
   func offscreenWindows(app: String) throws -> Int { offscreen }
+  func pressKey(app: String, key: String) throws { keys.append((app, key)) }
   func perform(app: String, id: Int, action: String) throws { acted.append((app, id, action)) }
   func setValue(app: String, id: Int, value: String) throws { setValues.append((app, id, value)) }
   func raise(app: String, windowId: Int?) throws {}
@@ -126,6 +128,16 @@ func runDispatcherTests() {
     try expect(out.contains("raise"), out)
     b.offscreen = 0
     try expect(!call(Dispatcher(backend: b), #"{"id":18,"method":"windows","params":{"app":"Brave Browser"}}"#).contains("hint"))
+  }
+  test("key sends a named key to the app and returns the diff — the commit AX cannot express") {
+    // Measured: setValue put a URL in Brave's omnibox and confirm reported ok,
+    // and nothing navigated. Chromium commits the omnibox on a real Return.
+    let b = FakeBackend(); let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":19,"method":"key","params":{"app":"Brave Browser","key":"return"}}"#)
+    try expectEqual(b.keys.first?.key, "return")
+    try expect(out.contains(#""diff""#), out)
+    let bad = call(d, #"{"id":20,"method":"key","params":{"app":"Brave Browser","key":"hyperspace"}}"#)
+    try expect(bad.contains(#""code":"bad_params""#) && bad.contains("return"), bad)
   }
   test("apps lists running apps with the frontmost marked") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":18,"method":"apps"}"#)

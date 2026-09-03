@@ -71,6 +71,10 @@ public protocol Backend: AnyObject {
   func offscreenWindows(app: String) throws -> Int
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
   func perform(app: String, id: Int, action: String) throws
+  /// A named key, delivered to the app as a real key event. For what the
+  /// Accessibility API has no verb for: committing an omnibox, dismissing a
+  /// sheet, moving through a list.
+  func pressKey(app: String, key: String) throws
   func setValue(app: String, id: Int, value: String) throws
   func raise(app: String, windowId: Int?) throws
 }

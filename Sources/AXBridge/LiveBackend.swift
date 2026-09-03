@@ -133,6 +133,23 @@ public final class LiveBackend: Backend {
     }
   }
 
+  static let keyCodes: [String: CGKeyCode] = [
+    "return": 36, "tab": 48, "escape": 53, "space": 49, "delete": 51, "up": 126, "down": 125, "left": 123, "right": 124,
+  ]
+
+  public func pressKey(app: String, key: String) throws {
+    let a = try resolve(app)
+    guard let code = Self.keyCodes[key] else { throw BridgeError.badParams("Unknown key \"\(key)\".") }
+    // Posted to the pid, not the system: it reaches the app whether or not it
+    // is frontmost, and cannot land in some other window by accident.
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
+      throw BridgeError.actionFailed("could not create key event")
+    }
+    down.postToPid(a.processIdentifier)
+    up.postToPid(a.processIdentifier)
+  }
+
   public func setValue(app: String, id: Int, value: String) throws {
     let (_, el) = try element(app, id)
     // Focus first: Chromium accepts a value on an unfocused omnibox but does

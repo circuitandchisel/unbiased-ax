@@ -5,7 +5,8 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "raise"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise"]
+  public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
 
   private let backend: Backend
   private var last: [String: Snapshot] = [:]
@@ -76,6 +77,11 @@ public final class Dispatcher {
       let id = try int(p, "id"); let value = try string(p, "value")
       try known(app, id)
       try backend.setValue(app: app, id: id, value: value)
+      return try afterAction(app, p)
+    case "key":
+      let key = try string(p, "key").lowercased()
+      guard Self.keys.contains(key) else { throw BridgeError.badParams("Unknown key \"\(key)\". Keys: \(Self.keys.joined(separator: ", ")).") }
+      try backend.pressKey(app: app, key: key)
       return try afterAction(app, p)
     case "raise":
       try backend.raise(app: app, windowId: p["window"] as? Int)
