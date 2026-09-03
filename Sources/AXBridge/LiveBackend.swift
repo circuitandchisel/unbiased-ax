@@ -80,10 +80,20 @@ public final class LiveBackend: Backend {
     let a = try resolve(app)
     guard let url = a.bundleURL else { throw BridgeError.noSuchApp(app) }
     let icon = NSWorkspace.shared.icon(forFile: url.path)
-    // 32pt is what a transcript row needs; the full icon is 512 and wasteful.
-    icon.size = NSSize(width: 32, height: 32)
-    guard let tiff = icon.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-          let png = rep.representation(using: .png, properties: [:]) else {
+    // Setting NSImage.size is only a display hint: tiffRepresentation still
+    // hands back the largest representation, which measured 1.8MB for one
+    // icon. Draw into a bitmap of the size we actually want instead.
+    let side = 64   // 32pt at 2x, so it stays sharp on a retina display
+    guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+                                     bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                     colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
+      throw BridgeError.actionFailed("could not allocate a bitmap for \(a.localizedName ?? app)'s icon")
+    }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+    NSGraphicsContext.restoreGraphicsState()
+    guard let png = rep.representation(using: .png, properties: [:]) else {
       throw BridgeError.actionFailed("could not render \(a.localizedName ?? app)'s icon as PNG")
     }
     return png
