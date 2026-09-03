@@ -15,6 +15,11 @@ func runElementTests() {
     try expectEqual(Role.normalize("AXButton", subrole: "AXCloseButton"), "close button")
     try expectEqual(Role.normalize("AXButton", subrole: nil), "button")
   }
+  test("AX action names are shortened too") {
+    try expectEqual(Role.normalizeAction("AXPress"), "press")
+    try expectEqual(Role.normalizeAction("AXRaise"), "raise")
+    try expectEqual(Role.normalizeAction("AXShowMenu"), "show menu")
+  }
   test("interactive roles are the ones a user can operate") {
     for r in ["button", "text field", "menu item", "link", "tab", "checkbox", "slider", "row", "cell"] {
       try expect(Role.isInteractive(r), "\(r) should be interactive")
