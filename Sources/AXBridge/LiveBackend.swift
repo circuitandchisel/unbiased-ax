@@ -73,7 +73,54 @@ public final class LiveBackend: Backend {
     return snap
   }
 
-  public func perform(app: String, id: Int, action: String) throws { throw BridgeError.actionFailed("not implemented yet") }
-  public func setValue(app: String, id: Int, value: String) throws { throw BridgeError.actionFailed("not implemented yet") }
-  public func raise(app: String, windowId: Int?) throws { throw BridgeError.actionFailed("not implemented yet") }
+  private func element(_ app: String, _ id: Int) throws -> (NSRunningApplication, AXElement) {
+    let a = try resolve(app)
+    guard let el = elements[a.processIdentifier]?[id] else { throw BridgeError.noSuchElement(id) }
+    return (a, el)
+  }
+
+  public func perform(app: String, id: Int, action: String) throws {
+    let (_, el) = try element(app, id)
+    let ax: String
+    switch action {
+    case "press": ax = kAXPressAction
+    case "raise": ax = kAXRaiseAction
+    case "show menu": ax = kAXShowMenuAction
+    case "focus":
+      let err = AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+      guard err == .success else { throw BridgeError.actionFailed("focus failed (AXError \(err.rawValue))") }
+      return
+    default:
+      // "show menu" style names back to AXShowMenu, for any action the tree listed.
+      ax = "AX" + action.split(separator: " ").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
+    }
+    let err = AXUIElementPerformAction(el.ref, ax as CFString)
+    switch err {
+    case .success: return
+    case .cannotComplete: throw BridgeError.timeout("action \(action) on element \(id)")
+    default: throw BridgeError.actionFailed("\(action) failed (AXError \(err.rawValue)). The actions this element supports are the ones listed in braces in the tree.")
+    }
+  }
+
+  public func setValue(app: String, id: Int, value: String) throws {
+    let (_, el) = try element(app, id)
+    // Focus first: Chromium accepts a value on an unfocused omnibox but does
+    // not commit it, so the address changes and nothing happens.
+    AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    let err = AXUIElementSetAttributeValue(el.ref, kAXValueAttribute as CFString, value as CFTypeRef)
+    guard err == .success else { throw BridgeError.actionFailed("setValue failed (AXError \(err.rawValue)); the element may be read-only") }
+  }
+
+  public func raise(app: String, windowId: Int?) throws {
+    let a = try resolve(app)
+    // Activate the app first: AXRaise on a background app's window is only
+    // honoured once the app is active. This works across Spaces, which is the
+    // whole reason the screenshot approach lost Brave.
+    a.activate(options: [])
+    if let id = windowId {
+      guard let w = elements[a.processIdentifier]?[id] else { throw BridgeError.noSuchWindow(id) }
+      let err = AXUIElementPerformAction(w.ref, kAXRaiseAction as CFString)
+      guard err == .success else { throw BridgeError.actionFailed("raise failed (AXError \(err.rawValue))") }
+    }
+  }
 }
