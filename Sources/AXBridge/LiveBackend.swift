@@ -76,6 +76,19 @@ public final class LiveBackend: Backend {
     }.count
   }
 
+  public func appIcon(app: String) throws -> Data {
+    let a = try resolve(app)
+    guard let url = a.bundleURL else { throw BridgeError.noSuchApp(app) }
+    let icon = NSWorkspace.shared.icon(forFile: url.path)
+    // 32pt is what a transcript row needs; the full icon is 512 and wasteful.
+    icon.size = NSSize(width: 32, height: 32)
+    guard let tiff = icon.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+          let png = rep.representation(using: .png, properties: [:]) else {
+      throw BridgeError.actionFailed("could not render \(a.localizedName ?? app)'s icon as PNG")
+    }
+    return png
+  }
+
   public func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     let a = try resolve(app)
     let root = appElement(a)

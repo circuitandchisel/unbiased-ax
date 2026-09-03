@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
 
   private let backend: Backend
@@ -43,6 +43,8 @@ public final class Dispatcher {
     let app = try string(p, "app")
     let geometry = (p["geometry"] as? Bool) ?? false
     switch method {
+    case "icon":
+      return ["png": try backend.appIcon(app: app).base64EncodedString()]
     case "windows":
       let wins = try backend.windows(app: app)
       let off = try backend.offscreenWindows(app: app)

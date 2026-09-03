@@ -1,3 +1,4 @@
+import Foundation
 /// The wire types. Codable so the live adapter and the tests share one shape.
 public struct AppInfo: Codable, Equatable {
   public var pid: Int32, name: String, bundleId: String?, frontmost: Bool
@@ -69,6 +70,9 @@ public protocol Backend: AnyObject {
   /// not list — on another Space, or hidden. AXWindows only sees the current
   /// Space, so without this a model cannot tell "no windows" from "elsewhere".
   func offscreenWindows(app: String) throws -> Int
+  /// The app's icon as PNG bytes. A transcript that says "press #643 in Brave"
+  /// reads far better beside Brave's own icon than beside a terminal glyph.
+  func appIcon(app: String) throws -> Data
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
   func perform(app: String, id: Int, action: String) throws
   /// A named key, delivered to the app as a real key event. For what the

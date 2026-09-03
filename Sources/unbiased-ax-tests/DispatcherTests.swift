@@ -1,3 +1,4 @@
+import Foundation
 import AXModel
 
 /// A backend with two apps and a fixed tree, enough to drive every method.
@@ -30,6 +31,11 @@ final class FakeBackend: Backend {
     return Snapshot.build(root: tree, source: FakeSource(), registry: &reg, options: options)
   }
   func offscreenWindows(app: String) throws -> Int { offscreen }
+  var iconPNG: Data? = Data([0x89, 0x50, 0x4E, 0x47])
+  func appIcon(app: String) throws -> Data {
+    guard let d = iconPNG else { throw BridgeError.noSuchApp(app) }
+    return d
+  }
   var focused: [(app: String, id: Int)] = []
   func pressKey(app: String, key: String, focusId: Int?) throws {
     if let id = focusId { focused.append((app, id)) }
@@ -162,6 +168,14 @@ func runDispatcherTests() {
     try expect(out.contains(#""diff""#), out)
     let bad = call(d, #"{"id":20,"method":"key","params":{"app":"Brave Browser","key":"hyperspace"}}"#)
     try expect(bad.contains(#""code":"bad_params""#) && bad.contains("return"), bad)
+  }
+  test("icon returns the app's icon as base64 png, so a transcript can show which app a step touched") {
+    let out = call(Dispatcher(backend: FakeBackend()), #"{"id":40,"method":"icon","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""png":"iVBORw=="#), out)   // the 4 bytes above, base64
+  }
+  test("an app with no icon is an error, not an empty string") {
+    let b = FakeBackend(); b.iconPNG = nil
+    try expect(call(Dispatcher(backend: b), #"{"id":41,"method":"icon","params":{"app":"Nope"}}"#).contains(#""code":"no_such_app""#))
   }
   test("apps lists running apps with the frontmost marked") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":18,"method":"apps"}"#)
