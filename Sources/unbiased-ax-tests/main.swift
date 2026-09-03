@@ -8,5 +8,6 @@ runIdRegistryTests()
 runSnapshotTests()
 runFormatterTests()
 runDifferTests()
+runDispatcherTests()
 
 finish()
