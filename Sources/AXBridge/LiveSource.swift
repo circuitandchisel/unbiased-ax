@@ -7,6 +7,12 @@ import AXModel
 /// one-call-per-attribute approach is several times the IPC on a Chromium tree.
 struct LiveSource: ElementSource {
   typealias Node = AXElement
+  /// The application element this source was made for. Chromium apps list
+  /// only their menu bar under the root's AXChildren; windows live under
+  /// AXWindows. Measured on Brave: tree came back as the menu bar alone.
+  var appRoot: AXElement? = nil
+  /// UNBIASED_AX_DEBUG=1 logs every AX read failure to stderr with its code.
+  static let debug = ProcessInfo.processInfo.environment["UNBIASED_AX_DEBUG"] == "1"
 
   static let wanted: [String] = [
     kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute,
@@ -18,7 +24,10 @@ struct LiveSource: ElementSource {
   func attributes(of node: AXElement) -> Attributes? {
     var values: CFArray?
     let err = AXUIElementCopyMultipleAttributeValues(node.ref, Self.wanted as CFArray, AXCopyMultipleAttributeOptions(), &values)
-    guard err == .success, let arr = values as? [AnyObject], arr.count == Self.wanted.count else { return nil }
+    guard err == .success, let arr = values as? [AnyObject], arr.count == Self.wanted.count else {
+      if Self.debug { FileHandle.standardError.write("[ax] attributes failed: AXError \(err.rawValue)\n".data(using: .utf8)!) }
+      return nil
+    }
 
     // Attributes the element lacks come back as AXValue error placeholders.
     func isAXValue(_ v: AnyObject) -> Bool { CFGetTypeID(v) == AXValueGetTypeID() }
@@ -30,7 +39,7 @@ struct LiveSource: ElementSource {
       if let u = v as? URL { return u.absoluteString }
       return nil
     }
-    func bool(_ i: Int) -> Bool { isAXValue(arr[i]) ? false : ((arr[i] as? Bool) ?? false) }
+    func bool(_ i: Int, absent: Bool = false) -> Bool { isAXValue(arr[i]) ? absent : ((arr[i] as? Bool) ?? absent) }
     // AXValueGetValue returns false for an error placeholder (or any AXValue of
     // another type), which is how "this element has no geometry" is detected.
     func point(_ i: Int) -> CGPoint? {
@@ -60,14 +69,23 @@ struct LiveSource: ElementSource {
     }
     var out = Attributes(role: role, title: title, value: str(3),
                          x: Int(p.x), y: Int(p.y), width: Int(s.width), height: Int(s.height),
-                         actions: actions, enabled: bool(7), focused: bool(8), selected: bool(9))
+                         // An element that does not report AXEnabled is not disabled.
+                         actions: actions, enabled: bool(7, absent: true), focused: bool(8), selected: bool(9))
     out.geometryKnown = sizeValue != nil
     return out
   }
 
   func children(of node: AXElement) -> [AXElement] {
     var v: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(node.ref, kAXChildrenAttribute as CFString, &v) == .success else { return [] }
-    return axElements(v).map(AXElement.init)
+    let err = AXUIElementCopyAttributeValue(node.ref, kAXChildrenAttribute as CFString, &v)
+    if err != .success && Self.debug { FileHandle.standardError.write("[ax] children failed: AXError \(err.rawValue)\n".data(using: .utf8)!) }
+    var kids = err == .success ? axElements(v).map(AXElement.init) : []
+    if let root = appRoot, node == root {
+      var w: CFTypeRef?
+      if AXUIElementCopyAttributeValue(node.ref, kAXWindowsAttribute as CFString, &w) == .success {
+        for win in axElements(w).map(AXElement.init) where !kids.contains(win) { kids.append(win) }
+      }
+    }
+    return kids
   }
 }

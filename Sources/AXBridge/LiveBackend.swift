@@ -69,8 +69,15 @@ public final class LiveBackend: Backend {
       // and tabs; page content is not in the tree at all.
       AXUIElementSetAttributeValue(root.ref, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     }
+    var probe: CFTypeRef?
+    let probeErr = AXUIElementCopyAttributeValue(root.ref, kAXRoleAttribute as CFString, &probe)
+    guard probeErr == .success else {
+      // Silent emptiness hid this once already (Finder returned count 0 with
+      // no explanation). Name the code so the next report is diagnosable.
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) did not answer the Accessibility API (AXError \(probeErr.rawValue)). -25204 is cannotComplete: the app is busy, or is not accessibility-enabled; -25211 is notImplemented; -25201 is invalid element.")
+    }
     var reg = registries[a.processIdentifier] ?? IdRegistry()
-    let snap = Snapshot.build(root: root, source: LiveSource(), registry: &reg, options: options)
+    let snap = Snapshot.build(root: root, source: LiveSource(appRoot: root), registry: &reg, options: options)
     registries[a.processIdentifier] = reg
     var map: [Int: AXElement] = [:]
     for n in snap.nodes { if let el = reg.identity(for: n.id)?.base as? AXElement { map[n.id] = el } }
