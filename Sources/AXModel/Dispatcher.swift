@@ -98,6 +98,7 @@ public final class Dispatcher {
     if let d = p["depth"] as? Int { o.maxDepth = d }
     if let m = p["maxElements"] as? Int { o.maxElements = m }
     if let i = p["interactive"] as? Bool { o.interactiveOnly = i }
+    if let w = p["web"] as? Bool { o.webContent = w }
     return o
   }
 

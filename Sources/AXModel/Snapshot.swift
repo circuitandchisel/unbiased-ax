@@ -19,8 +19,11 @@ public struct SnapshotOptions {
   public var maxDepth: Int
   public var maxElements: Int
   public var interactiveOnly: Bool
-  public init(maxDepth: Int = 14, maxElements: Int = 1500, interactiveOnly: Bool = false) {
-    self.maxDepth = maxDepth; self.maxElements = maxElements; self.interactiveOnly = interactiveOnly
+  /// Ask Chromium to build its web-content tree (AXEnhancedUserInterface).
+  /// Opt-in: it makes the browser do measurable extra work for every page.
+  public var webContent: Bool
+  public init(maxDepth: Int = 14, maxElements: Int = 1500, interactiveOnly: Bool = false, webContent: Bool = false) {
+    self.maxDepth = maxDepth; self.maxElements = maxElements; self.interactiveOnly = interactiveOnly; self.webContent = webContent
   }
 }
 

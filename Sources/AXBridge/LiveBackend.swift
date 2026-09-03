@@ -64,6 +64,11 @@ public final class LiveBackend: Backend {
   public func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     let a = try resolve(app)
     let root = appElement(a)
+    if options.webContent {
+      // What VoiceOver sets. Without it Chromium exposes only its own chrome
+      // and tabs; page content is not in the tree at all.
+      AXUIElementSetAttributeValue(root.ref, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
     var reg = registries[a.processIdentifier] ?? IdRegistry()
     let snap = Snapshot.build(root: root, source: LiveSource(), registry: &reg, options: options)
     registries[a.processIdentifier] = reg

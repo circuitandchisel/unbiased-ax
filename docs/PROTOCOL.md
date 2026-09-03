@@ -23,7 +23,7 @@ Two rules the model must know:
 | `hello` | — | `{name, protocolVersion, trusted}` — works without Accessibility |
 | `apps` | — | `{apps:[{pid,name,bundleId,frontmost}]}` — works without Accessibility |
 | `windows` | `app` | `{windows:[…], text}` — one line per window: `1 "Title" @x,y wxh [focused]` |
-| `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `geometry?`, `full?` | `{tree|diff, count, truncated}` |
+| `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in), `geometry?`, `full?` | `{tree|diff, count, truncated}` |
 | `find` | `app`, `role?`, `title?` (substring, also matches value) | `{matches:[lines], count}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `raise`, `show menu`, `focus`, or any action shown in braces) | `{ok, diff}` |
 | `setValue` | `app`, `id`, `value` | `{ok, diff}` |

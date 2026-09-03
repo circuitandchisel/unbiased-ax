@@ -78,6 +78,9 @@ func runDispatcherTests() {
     try expectEqual(b.lastOptions?.maxDepth, 3)
     try expectEqual(b.lastOptions?.maxElements, 40)
     try expectEqual(b.lastOptions?.interactiveOnly, true)
+    try expectEqual(b.lastOptions?.webContent, false, "web content is opt-in")
+    _ = call(d, #"{"id":9,"method":"tree","params":{"app":"Brave Browser","web":true}}"#)
+    try expectEqual(b.lastOptions?.webContent, true)
   }
   test("an unknown app is a clear error") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":10,"method":"tree","params":{"app":"Nope"}}"#)
