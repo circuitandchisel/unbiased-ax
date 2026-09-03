@@ -7,5 +7,6 @@ runElementTests()
 runIdRegistryTests()
 runSnapshotTests()
 runFormatterTests()
+runDifferTests()
 
 finish()
