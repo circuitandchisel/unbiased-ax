@@ -51,8 +51,46 @@ The full protocol is in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 - **Stable ids, never reused.** `act 17` two turns later hits the same element
   or is refused — never a different one.
 
-Measured timings against Brave with a dozen tabs, with and without `web:true`:
-*pending — requires an Accessibility-trusted process; see below.*
+Measured 2026-09-03 against Brave on a YouTube video page, 3840x2160, in-process
+(no process start), from a trusted process:
+
+| call | time | result |
+|---|---|---|
+| `tree` interactive | 164 ms | 367 elements, 24 KB |
+| `tree` full, unfiltered, `web:true` | 151 ms | 999 elements, 46 KB |
+| `tree` interactive, **second call** | 147 ms | **20 chars** — `(no changes)` |
+| `find` link "tame", `web:true` | 143 ms | 8 matches |
+| `windows` | 16 ms | 3 windows, 6 off-screen |
+
+The diff is the token story: a first look at a page is 24 KB, every look after
+it is the size of what changed. `find` is the cheap way to locate one control.
+
+Once `web:true` has been used on a Chromium app it stays on for that process —
+Chromium keeps its tree built once an assistive client has asked — so a
+"without web" measurement after the first is not a clean baseline.
+
+## The end-to-end run
+
+The task the project was built around, driven against real Brave on
+2026-09-03 with no model in the loop and no screenshot taken:
+
+    raise Brave                       0.8 s   Space switch, window becomes listable
+    find text field "address"         id 13
+    setValue id 13 = youtube.com/results?search_query=Loser+Tame+Impala
+    key return                        Chromium commits the omnibox on a real Return
+    find link "loser" web:true        32 matches; first: "Tame Impala - Loser (Official Video) 4 minutes, 28 seconds"
+    act id 643 press
+    windows                           "Tame Impala - Loser (Official Video) - YouTube - Audio playing - Brave"
+
+**8 calls, 9.3 seconds.** The screenshot approach took 27 calls and 6.7 minutes
+for the same outcome.
+
+Four things the fake tree could not have told us, each found on a real run and
+now covered by a test: the application root reports no size (or Finder's known
+0x0) and must never be pruned; Chromium keeps its windows under `AXWindows`,
+not the root's children; `AXWindows` lists only the **current Space**, so
+`windows` reports `offscreen` and `raise` waits for the switch; and an element
+reachable by two parents (Chromium's address bar) must appear once.
 
 ## Permission
 
