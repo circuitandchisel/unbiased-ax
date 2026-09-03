@@ -75,8 +75,11 @@ public protocol Backend: AnyObject {
   func appIcon(app: String) throws -> Data
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
   /// `keepFront` restores whatever application was in front before the action.
-  /// Pressing an element or setting a value pulls its app forward — and when
-  /// that app lives on another Space, forward means the user is taken there.
+  /// OFF by default, and that default is the important part: measured on a
+  /// native app, setValue does not pull its app forward at all. Restoring
+  /// after every action only un-does the one raise that made the app readable,
+  /// so the next read finds it gone and raises again — a switch per action.
+  /// Raise once, work there, and leave the user where the work is.
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws
   /// A named key, delivered to the app as a real key event. For what the
   /// Accessibility API has no verb for: committing an omnibox, dismissing a

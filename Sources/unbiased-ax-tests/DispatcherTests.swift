@@ -199,17 +199,17 @@ func runDispatcherTests() {
     let b = FakeBackend(); b.iconPNG = nil
     try expect(call(Dispatcher(backend: b), #"{"id":41,"method":"icon","params":{"app":"Nope"}}"#).contains(#""code":"no_such_app""#))
   }
-  test("keepFront rides with act and setValue, and defaults on") {
-    // Measured, reported by the user: the screen switched to the browser on
-    // EVERY action, not just the raise. Pressing an element and setting a
-    // value both pull their app forward, so the bridge has to put back
-    // whatever was in front — otherwise a ten-action task is ten switches.
+  test("keepFront rides with act and setValue, and defaults OFF") {
+    // The switch-per-action was not the actions: measured against a native
+    // app, setValue leaves the frontmost app alone. It was restoring focus
+    // after each one, which put the target app back on its own Space, so the
+    // next read found nothing and raised again. Two fixes fighting.
     let b = FakeBackend(); let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":50,"method":"tree","params":{"app":"Brave Browser"}}"#)
     _ = call(d, #"{"id":51,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
-    try expectEqual(b.keepFrontSeen.last, true, "default is to keep the user where they are")
-    _ = call(d, #"{"id":52,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x","keepFront":false}}"#)
-    try expectEqual(b.keepFrontSeen.last, false, "a caller can ask for the app to stay in front")
+    try expectEqual(b.keepFrontSeen.last, false, "off by default: restoring after every action causes a switch per action")
+    _ = call(d, #"{"id":52,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x","keepFront":true}}"#)
+    try expectEqual(b.keepFrontSeen.last, true, "a caller can still ask for it")
   }
   test("apps lists running apps with the frontmost marked") {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":18,"method":"apps"}"#)
