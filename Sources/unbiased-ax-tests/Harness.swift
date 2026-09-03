@@ -24,10 +24,10 @@ func expect(_ condition: Bool, _ message: @autoclosure () -> String = "expectati
   if !condition { throw Failure(description: "\(message()) [\(file):\(line)]") }
 }
 
-func expectEqual<T: Equatable>(_ actual: T, _ expected: T,
+func expectEqual<T: Equatable>(_ actual: T, _ expected: T, _ message: @autoclosure () -> String? = nil,
                                file: String = #fileID, line: Int = #line) throws {
-  try expect(actual == expected, "got \(String(reflecting: actual)), expected \(String(reflecting: expected))",
-             file: file, line: line)
+  let detail = "got \(String(reflecting: actual)), expected \(String(reflecting: expected))"
+  try expect(actual == expected, message().map { "\($0) — \(detail)" } ?? detail, file: file, line: line)
 }
 
 func finish() -> Never {
