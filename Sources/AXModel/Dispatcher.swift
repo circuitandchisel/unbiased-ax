@@ -49,11 +49,16 @@ public final class Dispatcher {
       let wins = try backend.windows(app: app)
       let off = try backend.offscreenWindows(app: app)
       var out: [String: Any] = ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n"), "offscreen": off]
-      if off > 0 {
-        // Reading and pressing work on a background app on any Space — that
-        // is the advantage over screenshots. Only say what is actually true:
-        // these windows are not listed HERE, not that they are unreachable.
-        out["hint"] = "\(off) window(s) are on another Space or hidden, so they are not listed here, but tree and act can still read and press this app where it is. Raise only if the user should see the app, or before a key that needs the window."
+      // The hint depends on whether anything readable is HERE, because that is
+      // what decides whether raising is necessary or gratuitous. Measured both
+      // ways: with a window on this Space the model raised for no reason and
+      // took the user's screen; with none, an off-Space window is simply not
+      // in the tree (12 elements, the menu bar) and no amount of reading finds
+      // it — the model spent six minutes proving that.
+      if off > 0 && wins.isEmpty {
+        out["hint"] = "This app's \(off) window(s) are all on another Space or hidden. They are NOT in the tree and cannot be read or acted on from here: call raise for this app first, then read again."
+      } else if off > 0 {
+        out["hint"] = "\(off) further window(s) are on another Space or hidden. The window(s) listed above are here and readable — work with those; do not raise."
       }
       return out
     case "tree":

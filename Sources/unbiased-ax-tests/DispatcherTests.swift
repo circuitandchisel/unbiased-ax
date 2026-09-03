@@ -8,6 +8,7 @@ final class FakeBackend: Backend {
   var setValues: [(app: String, id: Int, value: String)] = []
   var lastOptions: SnapshotOptions?
   var offscreen = 0
+  var hideWindows = false
   var keys: [(app: String, key: String)] = []
   var registries: [String: IdRegistry] = [:]
   let tree = group("w", [button("w/ok", "OK"),
@@ -21,7 +22,7 @@ final class FakeBackend: Backend {
   }
   func windows(app: String) throws -> [WindowInfo] {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
-    return [WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true)]
+    return hideWindows ? [] : [WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true)]
   }
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
@@ -151,13 +152,29 @@ func runDispatcherTests() {
     let bad = call(d, #"{"id":32,"method":"key","params":{"app":"Brave Browser","key":"space","id":999}}"#)
     try expect(bad.contains(#""code":"no_such_element""#), bad)
   }
-  test("off-screen windows are readable: the hint must not send the model to raise") {
-    let b = FakeBackend(); b.offscreen = 10
+  test("windows here plus windows elsewhere: work with what is here, do not raise") {
+    // The first live failure: the model raised even though the window it
+    // needed was already on this Space.
+    let b = FakeBackend(); b.offscreen = 5     // FakeBackend always returns one window
     let out = call(Dispatcher(backend: b), #"{"id":33,"method":"windows","params":{"app":"Brave Browser"}}"#)
-    try expect(out.contains(#""offscreen":10"#), out)
-    try expect(!out.lowercased().contains("call raise"), "must not tell the model to raise: \(out)")
-    try expect(!out.lowercased().contains("cannot be read"), "must not claim they are unreachable: \(out)")
-    try expect(out.lowercased().contains("can still read and press"), out)
+    try expect(out.contains(#""offscreen":5"#), out)
+    try expect(!out.lowercased().contains("call raise"), "must not instruct a raise when a window is here: \(out)")
+    try expect(out.lowercased().contains("do not raise"), out)
+  }
+  test("NO windows here and some elsewhere: say plainly that raise is the only way in") {
+    // The second live failure, and the worse one: a hint claiming off-Space
+    // windows could still be read sent the model through Spotlight, Dock
+    // clicks, Stage Manager and ten shell commands over six minutes. An
+    // off-Space window is NOT in the tree — measured: 12 elements, the menu
+    // bar, and zero matches for a search.
+    let b = FakeBackend(); b.offscreen = 10; b.hideWindows = true
+    let out = call(Dispatcher(backend: b), #"{"id":34,"method":"windows","params":{"app":"Brave Browser"}}"#)
+    try expect(out.lowercased().contains("raise"), "must send the model to raise: \(out)")
+    try expect(!out.lowercased().contains("can still read"), "must not promise what does not work: \(out)")
+  }
+  test("nothing anywhere: no hint at all") {
+    let b = FakeBackend(); b.offscreen = 0
+    try expect(!call(Dispatcher(backend: b), #"{"id":35,"method":"windows","params":{"app":"Brave Browser"}}"#).contains("hint"))
   }
   test("key sends a named key to the app and returns the diff — the commit AX cannot express") {
     // Measured: setValue put a URL in Brave's omnibox and confirm reported ok,
