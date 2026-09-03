@@ -64,6 +64,9 @@ public struct Snapshot: Equatable {
       if options.interactiveOnly && structural && kids.isEmpty && depth > 0 { return }
 
       let identity = source.identity(of: node)
+      // The same element can hang off two parents (Chromium does this with its
+      // address bar). One row per element, at the first place it was met.
+      if seen.contains(identity) { return }
       seen.insert(identity)
       nodes.append(SnapshotNode(id: registry.id(for: identity), depth: depth, attributes: attrs))
 

@@ -66,6 +66,15 @@ func runSnapshotTests() {
     let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
     try expectEqual(snap.nodes.map(\.attributes.title), ["Finder", "OK"])
   }
+  test("an element reachable by two paths appears once — Chromium's address bar did this") {
+    // Measured: find returned id 651 twice at two depths. Same AX element, two
+    // parents. The model must see one row per element or it double-counts.
+    let shared = button("shared", "Address")
+    let root = group("w", [group("w/a", [shared], title: "Toolbar"), group("w/b", [shared], title: "Focused")], title: "Win")
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
+    try expectEqual(snap.nodes.filter { $0.attributes.title == "Address" }.count, 1)
+  }
   test("interactive-only mode keeps windows and controls, drops decoration") {
     let root = group("w", [FakeNode("w/t", Attributes(role: "text", title: "Hello", width: 50, height: 12)),
                            button("w/ok", "OK")], title: "Save")
