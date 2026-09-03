@@ -30,7 +30,11 @@ final class FakeBackend: Backend {
     return Snapshot.build(root: tree, source: FakeSource(), registry: &reg, options: options)
   }
   func offscreenWindows(app: String) throws -> Int { offscreen }
-  func pressKey(app: String, key: String) throws { keys.append((app, key)) }
+  var focused: [(app: String, id: Int)] = []
+  func pressKey(app: String, key: String, focusId: Int?) throws {
+    if let id = focusId { focused.append((app, id)) }
+    keys.append((app, key))
+  }
   func perform(app: String, id: Int, action: String) throws { acted.append((app, id, action)) }
   func setValue(app: String, id: Int, value: String) throws { setValues.append((app, id, value)) }
   func raise(app: String, windowId: Int?) throws {}
@@ -119,15 +123,35 @@ func runDispatcherTests() {
     try expect(out.contains("YouTube - Brave"), out)
     try expect(out.contains("1200x800"), out)
   }
-  test("windows reports how many are on another Space, and says to raise first") {
+  test("windows reports how many are on another Space, and only hints when some are") {
     // Measured: AXWindows lists only the current Space. Brave had 10 windows
     // and 0 on screen, so every tree of it was its menu bar and nothing else.
     let b = FakeBackend(); b.offscreen = 10
     let out = call(Dispatcher(backend: b), #"{"id":17,"method":"windows","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains(#""offscreen":10"#), out)
-    try expect(out.contains("raise"), out)
+    try expect(out.contains("hint"), out)
     b.offscreen = 0
     try expect(!call(Dispatcher(backend: b), #"{"id":18,"method":"windows","params":{"app":"Brave Browser"}}"#).contains("hint"))
+  }
+  test("a key aimed at an element focuses it first — a bare key lands wherever focus happens to be") {
+    // Measured: the model sent space to play a video while focus sat in the
+    // omnibox, and typed spaces into the address bar instead.
+    let b = FakeBackend(); let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":30,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":31,"method":"key","params":{"app":"Brave Browser","key":"space","id":2}}"#)
+    try expectEqual(b.focused.first?.id, 2)
+    try expectEqual(b.keys.first?.key, "space")
+    // An id the model never saw is refused rather than sent somewhere random.
+    let bad = call(d, #"{"id":32,"method":"key","params":{"app":"Brave Browser","key":"space","id":999}}"#)
+    try expect(bad.contains(#""code":"no_such_element""#), bad)
+  }
+  test("off-screen windows are readable: the hint must not send the model to raise") {
+    let b = FakeBackend(); b.offscreen = 10
+    let out = call(Dispatcher(backend: b), #"{"id":33,"method":"windows","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""offscreen":10"#), out)
+    try expect(!out.lowercased().contains("call raise"), "must not tell the model to raise: \(out)")
+    try expect(!out.lowercased().contains("cannot be read"), "must not claim they are unreachable: \(out)")
+    try expect(out.lowercased().contains("can still read and press"), out)
   }
   test("key sends a named key to the app and returns the diff — the commit AX cannot express") {
     // Measured: setValue put a URL in Brave's omnibox and confirm reported ok,

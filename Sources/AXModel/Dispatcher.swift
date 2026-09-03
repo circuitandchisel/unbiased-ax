@@ -48,7 +48,10 @@ public final class Dispatcher {
       let off = try backend.offscreenWindows(app: app)
       var out: [String: Any] = ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n"), "offscreen": off]
       if off > 0 {
-        out["hint"] = "\(off) window(s) are on another Space or hidden and cannot be read or acted on from here. Call raise for this app to bring them to this Space, then windows or tree again."
+        // Reading and pressing work on a background app on any Space — that
+        // is the advantage over screenshots. Only say what is actually true:
+        // these windows are not listed HERE, not that they are unreachable.
+        out["hint"] = "\(off) window(s) are on another Space or hidden, so they are not listed here, but tree and act can still read and press this app where it is. Raise only if the user should see the app, or before a key that needs the window."
       }
       return out
     case "tree":
@@ -81,7 +84,9 @@ public final class Dispatcher {
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keys.contains(key) else { throw BridgeError.badParams("Unknown key \"\(key)\". Keys: \(Self.keys.joined(separator: ", ")).") }
-      try backend.pressKey(app: app, key: key)
+      let focusId = p["id"] as? Int
+      if let id = focusId { try known(app, id) }
+      try backend.pressKey(app: app, key: key, focusId: focusId)
       return try afterAction(app, p)
     case "raise":
       try backend.raise(app: app, windowId: p["window"] as? Int)

@@ -74,7 +74,10 @@ public protocol Backend: AnyObject {
   /// A named key, delivered to the app as a real key event. For what the
   /// Accessibility API has no verb for: committing an omnibox, dismissing a
   /// sheet, moving through a list.
-  func pressKey(app: String, key: String) throws
+  /// `focusId` focuses that element first, so the key lands where the caller
+  /// means it to. Without it the key goes wherever keyboard focus already is,
+  /// which is how "space to play a video" typed spaces into an address bar.
+  func pressKey(app: String, key: String, focusId: Int?) throws
   func setValue(app: String, id: Int, value: String) throws
   func raise(app: String, windowId: Int?) throws
 }

@@ -137,8 +137,14 @@ public final class LiveBackend: Backend {
     "return": 36, "tab": 48, "escape": 53, "space": 49, "delete": 51, "up": 126, "down": 125, "left": 123, "right": 124,
   ]
 
-  public func pressKey(app: String, key: String) throws {
+  public func pressKey(app: String, key: String, focusId: Int?) throws {
     let a = try resolve(app)
+    // Focus first when the caller named a target: a key event goes to whatever
+    // holds keyboard focus, and "space to play" in an omnibox types a space.
+    if let id = focusId {
+      let (_, el) = try element(app, id)
+      AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    }
     guard let code = Self.keyCodes[key] else { throw BridgeError.badParams("Unknown key \"\(key)\".") }
     // Posted to the pid, not the system: it reaches the app whether or not it
     // is frontmost, and cannot land in some other window by accident.
