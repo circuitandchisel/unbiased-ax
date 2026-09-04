@@ -11,6 +11,9 @@ struct LiveSource: ElementSource {
   /// only their menu bar under the root's AXChildren; windows live under
   /// AXWindows. Measured on Brave: tree came back as the menu bar alone.
   var appRoot: AXElement? = nil
+  /// Windows AXWindows cannot list — on another Space — reached through
+  /// RemoteToken. They hang off the root like any other window.
+  var extraWindows: [AXElement] = []
   /// UNBIASED_AX_DEBUG=1 logs every AX read failure to stderr with its code.
   static let debug = ProcessInfo.processInfo.environment["UNBIASED_AX_DEBUG"] == "1"
 
@@ -85,6 +88,7 @@ struct LiveSource: ElementSource {
       if AXUIElementCopyAttributeValue(node.ref, kAXWindowsAttribute as CFString, &w) == .success {
         for win in axElements(w).map(AXElement.init) where !kids.contains(win) { kids.append(win) }
       }
+      for win in extraWindows where !kids.contains(win) { kids.append(win) }
     }
     return kids
   }

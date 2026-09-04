@@ -95,12 +95,13 @@ struct WindowMap {
   /// public AXWindows window is the best witness: a token rebuilt from scratch
   /// must be CFEqual to that element, and a scan must then map at least one
   /// real window. Without any such app, a scan that maps a real window is
-  /// accepted alone. Anything less: cross-Space stays off and the bridge
-  /// behaves exactly as before. Never guess with a private API that has
+  /// accepted alone. A definitive no — missing symbols, a token that does not
+  /// round-trip — is false. Not trusted, or no app to witness with, is nil:
+  /// undecided, ask again later. Never guess with a private API that has
   /// stopped round-tripping.
-  static func selfCheck() -> Bool {
+  static func selfCheck() -> Bool? {
     guard RemoteToken.available else { debugLog("cross-Space self-check: private symbols missing; off"); return false }
-    guard AXIsProcessTrusted() else { debugLog("cross-Space self-check: not trusted; off"); return false }
+    guard AXIsProcessTrusted() else { debugLog("cross-Space self-check: not trusted; undecided"); return nil }
     let deadline = Date().addingTimeInterval(selfCheckBudget)
     // Every regular app owns the four system strips, so "has server windows"
     // selects nothing. A public AXWindows window does: it is a real window on
@@ -136,8 +137,8 @@ struct WindowMap {
       map.refresh(pid: a.processIdentifier)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?") (no public window to compare)"); return true }
     }
-    debugLog("cross-Space self-check: no app yielded a real window within \(Int(selfCheckBudget))s; off")
-    return false
+    debugLog("cross-Space self-check: no app yielded a real window within \(Int(selfCheckBudget))s; undecided")
+    return nil
   }
 
   private static func debugLog(_ s: String) {

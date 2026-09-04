@@ -11,11 +11,29 @@ public final class LiveBackend: Backend {
   /// id -> element from the last snapshot (or windows call), so act/setValue
   /// resolve an id the model saw to the element it meant.
   private var elements: [pid_t: [Int: AXElement]] = [:]
+  /// Every window of each process, on any Space. Only consulted once the
+  /// self-check has passed; see WindowMap.selfCheck.
+  private var windowMaps: [pid_t: WindowMap] = [:]
+  /// The self-check's verdict, once it has one. nil is "could not decide yet"
+  /// — not trusted, or no app to witness with — and is asked again, at most
+  /// every `selfCheckRetry`, so a bridge started before the Accessibility
+  /// grant turns cross-Space on without a restart.
+  private var crossSpaceVerdict: Bool? = nil
+  private var crossSpaceNextTry = Date.distantPast
+  private static let selfCheckRetry: TimeInterval = 30
 
   public init() {}
 
   public func isTrusted() -> Bool { AXIsProcessTrusted() }
-  public func crossSpace() -> Bool { false }   // replaced in Task 5
+
+  public func crossSpace() -> Bool {
+    if let v = crossSpaceVerdict { return v }
+    guard Date() >= crossSpaceNextTry else { return false }
+    crossSpaceNextTry = Date().addingTimeInterval(Self.selfCheckRetry)
+    let v = WindowMap.selfCheck()
+    crossSpaceVerdict = v
+    return v ?? false
+  }
 
   public func apps() -> [AppInfo] {
     NSWorkspace.shared.runningApplications
@@ -40,36 +58,61 @@ public final class LiveBackend: Backend {
     return AXElement(ref: e)
   }
 
-  public func windows(app: String) throws -> [WindowInfo] {
-    let a = try resolve(app)
+  /// The windows AXWindows lists — the current Space — as elements.
+  private func publicWindows(_ a: NSRunningApplication) throws -> [AXElement] {
     let root = appElement(a)
     var v: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(root.ref, kAXWindowsAttribute as CFString, &v)
     if LiveSource.debug {
-      FileHandle.standardError.write("[ax] AXWindows for \(a.localizedName ?? app): AXError \(err.rawValue), \(axElements(v).count) element(s)\n".data(using: .utf8)!)
+      FileHandle.standardError.write("[ax] AXWindows for \(a.localizedName ?? "?"): AXError \(err.rawValue), \(axElements(v).count) element(s)\n".data(using: .utf8)!)
     }
-    if err == .cannotComplete { throw BridgeError.timeout("\(a.localizedName ?? app) did not list its windows") }
+    if err == .cannotComplete { throw BridgeError.timeout("\(a.localizedName ?? "the app") did not list its windows") }
     guard err == .success else { return [] }
+    return axElements(v).map(AXElement.init)
+  }
+
+  /// Real windows on other Spaces: what the window server lists that AXWindows
+  /// does not. Empty until the self-check has passed. `appElement` has already
+  /// set the app-wide messaging timeout and RemoteToken sets it per element,
+  /// so the scan cannot hang either.
+  private func offSpaceWindows(_ a: NSRunningApplication, here: [AXElement]) -> [AXElement] {
+    guard crossSpace() else { return [] }
+    var map = windowMaps[a.processIdentifier] ?? WindowMap()
+    map.refresh(pid: a.processIdentifier)
+    windowMaps[a.processIdentifier] = map
+    return map.elements.filter { !here.contains($0) }
+  }
+
+  public func windows(app: String) throws -> [WindowInfo] {
+    let a = try resolve(app)
+    let here = try publicWindows(a)
+    let elsewhere = offSpaceWindows(a, here: here)
     let src = LiveSource()
     var reg = registries[a.processIdentifier] ?? IdRegistry()
     var out: [WindowInfo] = []
-    for w in axElements(v) {
-      let el = AXElement(ref: w)
+    // Parenthesised: a for-in sequence is parsed like an `if` condition, where
+    // a trailing closure would be read as the loop body.
+    for (el, onSpace) in (here.map { ($0, true) } + elsewhere.map { ($0, false) }) {
       guard let at = src.attributes(of: el) else { continue }
       var minimized: CFTypeRef?
-      AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &minimized)
+      AXUIElementCopyAttributeValue(el.ref, kAXMinimizedAttribute as CFString, &minimized)
       let id = reg.id(for: el)
       elements[a.processIdentifier, default: [:]][id] = el
       out.append(WindowInfo(id: id, title: at.title ?? "", x: at.x, y: at.y, width: at.width, height: at.height,
-                            minimized: (minimized as? Bool) ?? false, focused: at.focused,
-                            onSpace: true))   // AXWindows lists only this Space; Task 5 adds the others
+                            minimized: (minimized as? Bool) ?? false, focused: at.focused, onSpace: onSpace))
     }
     registries[a.processIdentifier] = reg
     return out
   }
 
+  /// With cross-Space on: real windows not on this Space, which ARE in the
+  /// tree. Without it: everything the window server lists that is not on
+  /// screen — the only signal there was, inflated by the system strips.
   public func offscreenWindows(app: String) throws -> Int {
     let a = try resolve(app)
+    if crossSpace() {
+      return offSpaceWindows(a, here: try publicWindows(a)).count
+    }
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
     return list.filter {
       ($0[kCGWindowOwnerPID as String] as? Int32) == a.processIdentifier
@@ -114,13 +157,14 @@ public final class LiveBackend: Backend {
     guard probeErr == .success else {
       // Silent emptiness hid this once already (Finder returned count 0 with
       // no explanation). Name the code so the next report is diagnosable.
-      throw BridgeError.actionFailed("\(a.localizedName ?? app) did not answer the Accessibility API (AXError \(probeErr.rawValue)). -25204 is cannotComplete: the app is busy, or is not accessibility-enabled; -25211 is notImplemented; -25201 is invalid element.")
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) did not answer the Accessibility API (AXError \(probeErr.rawValue)). -25204 is cannotComplete: the app is busy, or is not accessibility-enabled; -25211 is apiDisabled; -25208 is notImplemented; -25202 is invalid element.")
     }
     if LiveSource.debug, let at = LiveSource(appRoot: root).attributes(of: root) {
       FileHandle.standardError.write("[ax] root: role=\(at.role) title=\(at.title ?? "-") size=\(at.width)x\(at.height) geometryKnown=\(at.geometryKnown) children=\(LiveSource(appRoot: root).children(of: root).count)\n".data(using: .utf8)!)
     }
     var reg = registries[a.processIdentifier] ?? IdRegistry()
-    let snap = Snapshot.build(root: root, source: LiveSource(appRoot: root), registry: &reg, options: options)
+    let extra = offSpaceWindows(a, here: (try? publicWindows(a)) ?? [])
+    let snap = Snapshot.build(root: root, source: LiveSource(appRoot: root, extraWindows: extra), registry: &reg, options: options)
     registries[a.processIdentifier] = reg
     var map: [Int: AXElement] = [:]
     for n in snap.nodes { if let el = reg.identity(for: n.id)?.base as? AXElement { map[n.id] = el } }
@@ -229,25 +273,23 @@ public final class LiveBackend: Backend {
     // A bundle id needs -b; everything else is a name or a path for -a. Guessing
     // by shape is safe here because the two flags fail loudly, not silently.
     let looksLikeBundleId = app.contains(".") && !app.hasSuffix(".app") && !app.contains("/")
-    // Foreground, deliberately — unlike raise, which is kept to the one case
-    // that needs it. Launching in the background (-g) leaves the new window on
-    // whatever Space the app decides, so it is NOT in the tree and the model
-    // has to raise anyway: two steps, the screen taken regardless, and a
-    // useless read in between. Measured: -g gave back a 1-element tree and an
-    // off-Space hint. A foreground launch is also what "open Maps" means.
-    proc.arguments = [looksLikeBundleId ? "-b" : "-a", app]
+    // Foreground only when the tree is blind to other Spaces: a background
+    // launch (-g) leaves the new window wherever the app puts it, and without
+    // the remote-token path that window is NOT in the tree — measured: a
+    // 1-element tree and an off-Space hint. With cross-Space on, -g is the
+    // right call: the window is readable wherever it lands and the user keeps
+    // their screen, which is the whole point.
+    proc.arguments = (crossSpace() ? ["-g"] : []) + [looksLikeBundleId ? "-b" : "-a", app]
     proc.standardOutput = FileHandle.nullDevice
     proc.standardError = FileHandle.nullDevice
     do { try proc.run() } catch { return false }
     proc.waitUntilExit()
     guard proc.terminationStatus == 0 else { return false }
 
-    // READABLE, not merely running. The distinction matters: an app whose
-    // windows are all on another Space is not in the accessibility tree, and
-    // an earlier version of this loop accepted `offscreen > 0` as good enough
-    // — so it returned in 0.2s with nothing readable and the caller got an
-    // 8-element menu bar. Wait for a window on THIS Space; activating one that
-    // lives elsewhere means macOS has a Space switch to finish first.
+    // READABLE, not merely running. `windows` includes off-Space windows when
+    // cross-Space is on, so "readable" means "anywhere"; without it, it means
+    // "on this Space", and activating a window that lives elsewhere means
+    // macOS has a Space switch to finish first.
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       if let a = try? resolve(app), let wins = try? windows(app: String(a.processIdentifier)), !wins.isEmpty {
