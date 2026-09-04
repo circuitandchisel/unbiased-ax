@@ -14,7 +14,11 @@ struct WindowMap {
   static let realSubroles: Set<String> = ["AXStandardWindow", "AXDialog"]
   /// About a second at the measured 16µs per miss. Window elements are made
   /// early (ids 45–209 observed), but a window opened late in a long Chromium
-  /// session has a high id; this bounds the hunt. Paid once per unsettled wid.
+  /// session has a high id; this bounds the hunt. Paid at most once per
+  /// refresh that finds an unsettled wid, and to the cap only when one of them
+  /// has no element — the system strips, so once per app. Not resumed from the
+  /// highest id seen: that could not skip the strips' to-cap scan and would be
+  /// unsafe if an app ever recycled ids.
   static let scanCap: UInt32 = 65_536
   /// A full cap scan takes about a second when the app answers. Past this the
   /// app is not answering, and a scan that keeps going is a hang, not a scan.
@@ -26,7 +30,10 @@ struct WindowMap {
   /// An aborted scan settles nothing, so the next refresh tries again.
   private var settled: Set<CGWindowID> = []
 
-  var elements: [AXElement] { Array(byWid.values) }
+  /// Sorted by wid — creation order — so root-child order, and where
+  /// maxElements cuts, is the same on every read. Dictionary order moved the
+  /// truncation boundary between two polls and looked like change.
+  var elements: [AXElement] { byWid.sorted { $0.key < $1.key }.map(\.value) }
 
   /// Layer-0 windows the window server lists for the pid, on any Space.
   static func serverWindows(pid: pid_t) -> Set<CGWindowID> {
@@ -58,18 +65,18 @@ struct WindowMap {
     while id < Self.scanCap, !missing.isEmpty {
       defer { id += 1 }
       if Date().timeIntervalSince(started) > Self.scanBudget { aborted = true; break }
-      guard let el = RemoteToken.element(pid: pid, elementId: id) else { break } // symbol missing: nothing to scan
+      guard let el = RemoteToken.element(pid: pid, elementId: id) else { aborted = true; break } // nothing was checked; settle nothing
       let (err, role) = Self.attr(el, kAXRoleAttribute)
       if err == .cannotComplete { aborted = true; break }
       guard err == .success, role == "AXWindow",
             let wid = RemoteToken.windowId(of: el), missing.contains(wid) else { continue }
-      if Self.realSubroles.contains(Self.attr(el, kAXSubroleAttribute).1 ?? "") { byWid[wid] = AXElement(ref: el) }
+      let (serr, sub) = Self.attr(el, kAXSubroleAttribute)
+      if serr == .cannotComplete { aborted = true; break }
+      if Self.realSubroles.contains(sub ?? "") { byWid[wid] = AXElement(ref: el) }
       missing.remove(wid)
     }
-    if LiveSource.debug {
-      let ms = Int(Date().timeIntervalSince(started) * 1000)
-      FileHandle.standardError.write("[ax] window scan pid \(pid): \(id) ids in \(ms)ms, \(byWid.count) real window(s), \(missing.count) wid(s) with no element\(aborted ? ", ABORTED: the app is not answering" : "")\n".data(using: .utf8)!)
-    }
+    let ms = Int(Date().timeIntervalSince(started) * 1000)
+    Self.debugLog("window scan pid \(pid): \(id) ids in \(ms)ms, \(byWid.count) real window(s), \(missing.count) wid(s) with no element\(aborted ? ", ABORTED: the app is not answering" : "")")
     if !aborted { settled = live }
   }
 
@@ -79,35 +86,61 @@ struct WindowMap {
     return (e, e == .success ? v as? String : nil)
   }
 
-  /// Prove the mechanism on THIS machine before relying on it. An app with
-  /// windows must yield a real window whose id the window server lists, and
-  /// when that app has a public AXWindows element, a token rebuilt from scratch
-  /// must be CFEqual to it. Anything less: cross-Space stays off and the bridge
-  /// behaves exactly as before. Never guess with a private API that has stopped
-  /// round-tripping.
+  /// Startup proof of the mechanism, bounded by wall clock rather than by a
+  /// count of apps: three unlucky candidates would otherwise cost three cap
+  /// scans and the app side's hello timeout.
+  static let selfCheckBudget: TimeInterval = 5.0
+
+  /// Prove the mechanism on THIS machine before relying on it. An app with a
+  /// public AXWindows window is the best witness: a token rebuilt from scratch
+  /// must be CFEqual to that element, and a scan must then map at least one
+  /// real window. Without any such app, a scan that maps a real window is
+  /// accepted alone. Anything less: cross-Space stays off and the bridge
+  /// behaves exactly as before. Never guess with a private API that has
+  /// stopped round-tripping.
   static func selfCheck() -> Bool {
-    guard RemoteToken.available, AXIsProcessTrusted() else { return false }
-    var candidates = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-    if let f = NSWorkspace.shared.frontmostApplication, let i = candidates.firstIndex(of: f) { candidates.swapAt(0, i) }
-    for a in candidates.prefix(3) {
-      let pid = a.processIdentifier
-      guard !serverWindows(pid: pid).isEmpty else { continue }
-      let root = AXUIElementCreateApplication(pid)
+    guard RemoteToken.available else { debugLog("cross-Space self-check: private symbols missing; off"); return false }
+    guard AXIsProcessTrusted() else { debugLog("cross-Space self-check: not trusted; off"); return false }
+    let deadline = Date().addingTimeInterval(selfCheckBudget)
+    // Every regular app owns the four system strips, so "has server windows"
+    // selects nothing. A public AXWindows window does: it is a real window on
+    // this Space, and it lets the identity check run — the stronger proof.
+    var withPublic: [(NSRunningApplication, AXUIElement)] = []
+    var without: [NSRunningApplication] = []
+    for a in NSWorkspace.shared.runningApplications where a.activationPolicy == .regular {
+      if Date() > deadline { break }
+      let root = AXUIElementCreateApplication(a.processIdentifier)
       AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
       var v: CFTypeRef?
       if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v) == .success, let pub = axElements(v).first {
-        guard let id = RemoteToken.elementId(of: pub), let rebuilt = RemoteToken.element(pid: pid, elementId: id), CFEqual(rebuilt, pub) else {
-          if LiveSource.debug { FileHandle.standardError.write("[ax] cross-Space self-check: token round-trip failed on \(a.localizedName ?? "?")\n".data(using: .utf8)!) }
-          return false
-        }
+        withPublic.append((a, pub))
+      } else {
+        without.append(a)
+      }
+    }
+    if let f = NSWorkspace.shared.frontmostApplication, let i = withPublic.firstIndex(where: { $0.0 == f }) { withPublic.swapAt(0, i) }
+    for (a, pub) in withPublic {
+      if Date() > deadline { break }
+      let pid = a.processIdentifier
+      guard let id = RemoteToken.elementId(of: pub), let rebuilt = RemoteToken.element(pid: pid, elementId: id), CFEqual(rebuilt, pub) else {
+        debugLog("cross-Space self-check: token round-trip failed on \(a.localizedName ?? "?"); off")
+        return false
       }
       var map = WindowMap()
       map.refresh(pid: pid)
-      if !map.byWid.isEmpty {
-        if LiveSource.debug { FileHandle.standardError.write("[ax] cross-Space self-check: ok via \(a.localizedName ?? "?")\n".data(using: .utf8)!) }
-        return true
-      }
+      if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?")"); return true }
     }
+    for a in without {
+      if Date() > deadline { break }
+      var map = WindowMap()
+      map.refresh(pid: a.processIdentifier)
+      if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?") (no public window to compare)"); return true }
+    }
+    debugLog("cross-Space self-check: no app yielded a real window within \(Int(selfCheckBudget))s; off")
     return false
+  }
+
+  private static func debugLog(_ s: String) {
+    if LiveSource.debug { FileHandle.standardError.write("[ax] \(s)\n".data(using: .utf8)!) }
   }
 }
