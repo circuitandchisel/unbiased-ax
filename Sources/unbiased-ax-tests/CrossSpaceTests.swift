@@ -28,17 +28,18 @@ func runCrossSpaceTests() {
     let out = call(Dispatcher(backend: b), #"{"id":6,"method":"windows","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains(#""onSpace":true"#), out)
     try expect(!out.contains("[other Space]"), out)
+    try expect(!out.contains("hint"), out)
   }
 
   test("a read across Spaces carries no raise hint, and still counts what is elsewhere") {
     // The whole point: the model must never be sent to raise for a window it
     // can already read. The count stays so a UI can say where the work is.
     let b = FakeBackend(); b.crossSpaceOn = true; b.hideWindows = true; b.offscreen = 1
-    for method in ["tree", "windows", "find"] {
+    for method in ["tree", "windows", "find", "launch"] {
       let out = call(Dispatcher(backend: b), #"{"id":4,"method":"\#(method)","params":{"app":"Brave Browser","title":"OK"}}"#)
       try expect(out.contains(#""offscreen":1"#), "\(method) must still report the count: \(out)")
       try expect(!out.contains("hint"), "\(method) must not hint when the window is readable: \(out)")
-      try expect(!out.lowercased().contains("raise"), "\(method) must never mention raising: \(out)")
+      try expect(!out.contains("call raise") && !out.contains("do not raise"), "\(method) must never instruct a raise: \(out)")
     }
   }
 

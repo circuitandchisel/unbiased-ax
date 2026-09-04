@@ -48,7 +48,7 @@ public final class Dispatcher {
     case "windows":
       let wins = try backend.windows(app: app)
       var out: [String: Any] = ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n")]
-      try annotateSpaces(&out, app: app, windowsHere: wins.count)
+      try annotateSpaces(&out, app: app, windowsHere: { wins.count })
       return out
     case "tree":
       let snap = try backend.snapshot(app: app, options: options(p))
@@ -65,7 +65,7 @@ public final class Dispatcher {
       // explanation. A model given eight bare elements concludes the tool is
       // broken and leaves for the shell. `windows` carried this hint from the
       // start; `tree` — the read the model actually calls — never did.
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "find":
       let snap = try backend.snapshot(app: app, options: options(p))
@@ -77,7 +77,7 @@ public final class Dispatcher {
         (needle == nil || (n.attributes.title ?? "").lowercased().contains(needle!) || (n.attributes.value ?? "").lowercased().contains(needle!))
       }
       var out: [String: Any] = ["matches": hits.map { Formatter.line($0, geometry: geometry) }, "count": hits.count]
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "act":
       let id = try int(p, "id"); let action = try string(p, "action")
@@ -116,7 +116,7 @@ public final class Dispatcher {
         "tree": Formatter.render(snap, geometry: false),
         "count": snap.nodes.count,
       ]
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "scroll":
       let id = try int(p, "id")
@@ -140,11 +140,13 @@ public final class Dispatcher {
   /// spent six minutes proving that, and another lost the task to a shell.
   /// With the remote-token path proved, every window is in the tree and there
   /// is nothing to advise: the count stays, the hint goes.
-  private func annotateSpaces(_ out: inout [String: Any], app: String, windowsHere: Int) throws {
+  /// `windowsHere` is a closure because in the cross-Space world it is never
+  /// needed, and computing it is a window scan.
+  private func annotateSpaces(_ out: inout [String: Any], app: String, windowsHere: () throws -> Int) throws {
     let off = try backend.offscreenWindows(app: app)
     out["offscreen"] = off
     guard off > 0, !backend.crossSpace() else { return }
-    if windowsHere == 0 {
+    if try windowsHere() == 0 {
       out["hint"] = "This app's \(off) window(s) are all on another Space or hidden. They are NOT in the tree and cannot be read or acted on from here: call raise for this app first, then read again."
     } else {
       out["hint"] = "\(off) further window(s) are on another Space or hidden. The window(s) here are readable — work with those; do not raise."
