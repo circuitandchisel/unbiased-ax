@@ -34,7 +34,7 @@ public final class Dispatcher {
     guard Self.methods.contains(method) else { throw BridgeError.unknownMethod(method) }
     switch method {
     case "hello":
-      return ["name": "unbiased-ax", "protocolVersion": protocolVersion, "trusted": backend.isTrusted()]
+      return ["name": "unbiased-ax", "protocolVersion": protocolVersion, "trusted": backend.isTrusted(), "crossSpace": backend.crossSpace()]
     case "apps":
       return ["apps": backend.apps().map(asDict)]
     default: break

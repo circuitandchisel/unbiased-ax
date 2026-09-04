@@ -15,6 +15,7 @@ public final class LiveBackend: Backend {
   public init() {}
 
   public func isTrusted() -> Bool { AXIsProcessTrusted() }
+  public func crossSpace() -> Bool { false }   // replaced in Task 5
 
   public func apps() -> [AppInfo] {
     NSWorkspace.shared.runningApplications

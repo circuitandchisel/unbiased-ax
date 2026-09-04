@@ -9,9 +9,12 @@ public struct AppInfo: Codable, Equatable {
 
 public struct WindowInfo: Codable, Equatable {
   public var id: Int, title: String, x: Int, y: Int, width: Int, height: Int, minimized: Bool, focused: Bool
-  public init(id: Int, title: String, x: Int, y: Int, width: Int, height: Int, minimized: Bool, focused: Bool) {
+  /// False for a window on another Space. Such a window IS in the tree and
+  /// takes actions like any other; the flag only tells the model where it is.
+  public var onSpace: Bool
+  public init(id: Int, title: String, x: Int, y: Int, width: Int, height: Int, minimized: Bool, focused: Bool, onSpace: Bool = true) {
     self.id = id; self.title = title; self.x = x; self.y = y; self.width = width; self.height = height
-    self.minimized = minimized; self.focused = focused
+    self.minimized = minimized; self.focused = focused; self.onSpace = onSpace
   }
   /// `1 "YouTube - Brave" @0,0 1200x800 [focused]` — the model reads windows the
   /// same way it reads elements.
@@ -19,6 +22,7 @@ public struct WindowInfo: Codable, Equatable {
     var parts = ["\(id) \"\(title)\" @\(x),\(y) \(width)x\(height)"]
     if focused { parts.append("[focused]") }
     if minimized { parts.append("[minimized]") }
+    if !onSpace { parts.append("[other Space]") }
     return parts.joined(separator: " ")
   }
 }
@@ -67,6 +71,10 @@ public enum BridgeError: Error {
 /// What the live adapter provides. Everything the dispatcher needs, nothing more.
 public protocol Backend: AnyObject {
   func isTrusted() -> Bool
+  /// Whether windows on another Space are in the tree. True only when the live
+  /// adapter has proved the private remote-token path works on this machine;
+  /// false means today's behaviour, raise hints included.
+  func crossSpace() -> Bool
   func apps() -> [AppInfo]
   func windows(app: String) throws -> [WindowInfo]
   /// Windows the window server knows about that the Accessibility API does
