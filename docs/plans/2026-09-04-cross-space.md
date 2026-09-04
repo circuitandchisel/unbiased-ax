@@ -1148,3 +1148,23 @@ git commit -m "docs: cross-Space measured end to end — zero raises on the Maps
 ```
 
 If either task raised, do not tune blindly: find the log line's reason (`the model asked`, `auto:`, `re-assert`) — each names exactly one code path in Tasks 10–11.
+
+---
+
+### Task 13: Actions carry the read's options (after Task 12)
+
+Found in review, sequenced after the acceptance run so it cannot confound the
+raise count. The app reads with `interactive: true` but every action it sends
+— `act`, `setValue`, `key`, `scroll`, and each `do` batch step — carries no
+`interactive`/`web`, so the bridge's post-action snapshot is the full tree: the
+diff is hundreds of `+` structural lines, those elements are minted with new
+ids, and `Differ.changed` fires at once, cutting the settle wait to its 0.6 s
+floor. `docs/PROTOCOL.md` now warns callers about exactly this.
+
+**Files:** `src/main/index.ts` (the AX dispatch: every `ax.request("act"|"setValue"|"key"|"scroll", …)` site and the `computer_do` step loop).
+
+**Steps:**
+1. Measure first: on the Maps task with `UNBIASED_AX_DEBUG=1`, record the line count of the `diff` returned by three actions.
+2. Track per app what it was last read with — `axReadOpts: Map<string, { interactive: boolean; web: boolean }>` set in `computer_app_state` — and spread those two fields into every action request for that app (default `{ interactive: true, web: false }` when the app was never read).
+3. Repeat the measurement; the diffs should be a handful of `~`/`+` lines.
+4. Commit: `fix(ax): actions snapshot with the options the read used, so a diff is a diff`.
