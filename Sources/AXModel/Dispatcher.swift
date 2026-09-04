@@ -131,18 +131,19 @@ public final class Dispatcher {
     }
   }
 
-  /// Off-Space windows, and what to do about them. AXWindows only lists the
-  /// current Space, so "no windows" and "windows elsewhere" look identical in
-  /// a tree; this is the only thing that tells them apart. The advice differs
-  /// by whether anything readable is HERE, because that is what decides
-  /// whether raising is necessary or gratuitous: with a window on this Space
-  /// the model raised for no reason and took the user's screen; with none, no
-  /// amount of reading finds the window — a model spent six minutes proving
-  /// that, and another lost the task to a shell.
+  /// Off-Space windows, and what to do about them. Without the remote-token
+  /// path AXWindows lists only the current Space, so "no windows" and "windows
+  /// elsewhere" look identical in a tree; the hint is the only thing that tells
+  /// them apart, and its advice differs by whether anything readable is HERE:
+  /// with a window on this Space the model raised for no reason and took the
+  /// user's screen; with none, no amount of reading finds the window — a model
+  /// spent six minutes proving that, and another lost the task to a shell.
+  /// With the remote-token path proved, every window is in the tree and there
+  /// is nothing to advise: the count stays, the hint goes.
   private func annotateSpaces(_ out: inout [String: Any], app: String, windowsHere: Int) throws {
     let off = try backend.offscreenWindows(app: app)
     out["offscreen"] = off
-    guard off > 0 else { return }
+    guard off > 0, !backend.crossSpace() else { return }
     if windowsHere == 0 {
       out["hint"] = "This app's \(off) window(s) are all on another Space or hidden. They are NOT in the tree and cannot be read or acted on from here: call raise for this app first, then read again."
     } else {
