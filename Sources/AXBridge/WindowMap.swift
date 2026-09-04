@@ -129,13 +129,14 @@ struct WindowMap {
   static let selfCheckBudget: TimeInterval = 5.0
 
   /// Prove the mechanism on THIS machine before relying on it. An app with a
-  /// public AXWindows window is the best witness: a token rebuilt from scratch
-  /// must be CFEqual to that element, and a scan must then map at least one
-  /// real window. Without any such app, a scan that maps a real window is
-  /// accepted alone. A definitive no — missing symbols, a token that does not
-  /// round-trip — is false. Not trusted, or no app to witness with, is nil:
-  /// undecided, ask again later. Never guess with a private API that has
-  /// stopped round-tripping.
+  /// public AXWindows window that has a window id is a witness: a token
+  /// rebuilt from scratch must be CFEqual to that element, and a scan must
+  /// then map at least one real window. Every witness is tried; one failure is
+  /// that window's shape, not the machine's (Finder's desktop has no window id
+  /// and does not round-trip). A definitive no — missing symbols, or no
+  /// witness at all round-trips — is false. Not trusted, or nothing to witness
+  /// with, is nil: undecided, ask again later. Never guess with a private API
+  /// that has stopped round-tripping.
   static func selfCheck() -> Bool? {
     guard RemoteToken.available else { debugLog("cross-Space self-check: private symbols missing; off"); return false }
     guard AXIsProcessTrusted() else { debugLog("cross-Space self-check: not trusted; undecided"); return nil }
@@ -151,23 +152,26 @@ struct WindowMap {
       AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
       var v: CFTypeRef?
       let err = AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v)
-      if err == .success, let pub = axElements(v).first {
+      if err == .success, let pub = axElements(v).first(where: { RemoteToken.windowId(of: $0) != nil }) {
         withPublic.append((a, pub))
       } else if err != .cannotComplete {
         without.append(a)
       }
     }
     if let f = NSWorkspace.shared.frontmostApplication, let i = withPublic.firstIndex(where: { $0.0 == f }) { withPublic.swapAt(0, i) }
+    var roundTripFailed = false
     for (a, pub) in withPublic {
       if Date() > deadline { break }
       let pid = a.processIdentifier
+      let name = a.localizedName ?? "?"
       guard let id = RemoteToken.elementId(of: pub), let rebuilt = RemoteToken.element(pid: pid, elementId: id), CFEqual(rebuilt, pub) else {
-        debugLog("cross-Space self-check: token round-trip failed on \(a.localizedName ?? "?"); off")
-        return false
+        debugLog("cross-Space self-check: token round-trip failed on \(name); trying the next witness")
+        roundTripFailed = true
+        continue
       }
       var map = WindowMap()
       map.refresh(pid: pid)
-      if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?")"); return true }
+      if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(name)"); return true }
     }
     for a in without {
       if Date() > deadline { break }
@@ -175,6 +179,7 @@ struct WindowMap {
       map.refresh(pid: a.processIdentifier)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?") (no public window to compare)"); return true }
     }
+    if roundTripFailed { debugLog("cross-Space self-check: no witness round-tripped; off"); return false }
     debugLog("cross-Space self-check: no app yielded a real window within \(Int(selfCheckBudget))s; undecided")
     return nil
   }
