@@ -160,6 +160,7 @@ struct WindowMap {
     }
     if let f = NSWorkspace.shared.frontmostApplication, let i = withPublic.firstIndex(where: { $0.0 == f }) { withPublic.swapAt(0, i) }
     var roundTripFailed = false
+    var anyRoundTripped = false
     for (a, pub) in withPublic {
       if Date() > deadline { break }
       let pid = a.processIdentifier
@@ -169,6 +170,7 @@ struct WindowMap {
         roundTripFailed = true
         continue
       }
+      anyRoundTripped = true
       var map = WindowMap()
       map.refresh(pid: pid)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(name)"); return true }
@@ -179,7 +181,7 @@ struct WindowMap {
       map.refresh(pid: a.processIdentifier)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?") (no public window to compare)"); return true }
     }
-    if roundTripFailed { debugLog("cross-Space self-check: no witness round-tripped; off"); return false }
+    if roundTripFailed && !anyRoundTripped { debugLog("cross-Space self-check: no witness round-tripped; off"); return false }
     debugLog("cross-Space self-check: no app yielded a real window within \(Int(selfCheckBudget))s; undecided")
     return nil
   }
