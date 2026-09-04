@@ -71,8 +71,10 @@ struct WindowMap {
     guard Date().timeIntervalSince(lastRefresh) >= Self.refreshTTL else { return }
     lastRefresh = Date()
     let live = Self.serverWindows(pid: pid)
-    if byWid.isEmpty, let t = emptyScanAt, Date().timeIntervalSince(t) >= Self.emptyRetry { settled = [] }
     byWid = byWid.filter { live.contains($0.key) }
+    // Empty by attrition counts as empty: a map whose last window just closed
+    // has never scanned empty, so a nil timestamp means "already expired".
+    if byWid.isEmpty, Date().timeIntervalSince(emptyScanAt ?? .distantPast) >= Self.emptyRetry { settled = [] }
     settled.formIntersection(live)
     var missing = live.subtracting(settled)
     guard !missing.isEmpty else { return }
