@@ -24,17 +24,20 @@ Three rules the model must know:
 ## Spaces
 
 `hello` reports `crossSpace`. When true, windows on another Space are in the
-tree and take actions like any other; `windows` marks them `[other Space]` and
-`offscreen` counts them. Nothing needs raising to be read. With it false,
-`offscreen` is every layer-0 window the window server lists that is not on
-screen — other Spaces, hidden and minimized alike — and it is inflated by system
-windows that are not windows at all; treat it as a signal, not a count. When
-false — the private path has not passed its self-check on this machine, or the
-process is not yet trusted — only the current Space is readable, and reads carry
-a `hint` saying whether to `raise`. The verdict is decided on the first trusted
-call that finds an app to witness with — retried at most every 30s until then —
-and can turn from false to true in a long-lived bridge; call `hello` again to
-see it. Deciding it costs the first trusted call up to five seconds.
+tree and are read, found and acted on like any other — `scroll` excepted until
+verified. `windows` marks them `[other Space]` and `offscreen` counts them.
+Nothing needs raising to be read.
+
+When false — the private path has not passed its self-check on this machine, or
+the process is not yet trusted — only the current Space is readable, and reads
+carry a `hint` saying whether to `raise` when any window is elsewhere. With it
+false, `offscreen` is every window the window server knows for the app that is
+not on screen — other Spaces, hidden and minimized alike — and it is inflated by
+system windows that are not windows at all; treat it as a signal, not a count.
+The verdict is decided on the first trusted call that finds an app to witness
+with — retried at most every 30s until then — and can turn from false to true in
+a long-lived bridge; call `hello` again to see it. Deciding it is budgeted at
+five seconds, paid by the first trusted call.
 
 ## Methods
 
@@ -46,17 +49,18 @@ see it. Deciding it costs the first trusted call up to five seconds.
 | `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in, sticky for that process), `geometry?`, `full?` | `{tree|diff, count, truncated, offscreen, hint?}` |
 | `find` | `app`, `role?` (exact), `title?` (substring, also matches value), plus the `tree` options | `{matches:[lines], count, offscreen, hint?}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces), `keepFront?` (default false) | `{ok, diff}` |
-| `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first |
-| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first) | `{ok, diff}` — a real key event posted to the app's pid |
-| `scroll` | `app`, `id`, `dx?`, `dy?` (one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint |
+| `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox |
+| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid |
+| `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
-| `launch` | `app`, `timeout?`(15), plus the `tree` options except `geometry` | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable |
+| `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable |
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
 
 Every action accepts the `tree` options (`depth`, `maxElements`, `interactive`,
-`web`) for the snapshot it takes afterwards; use the same ones you read with, or
-the diff is full of `+` structural lines and the wait ends early. `geometry` is
-ignored for action diffs and for `launch`'s tree.
+`web`; `geometry` is not one of them for actions) for the snapshot it takes
+afterwards; use the same ones you read with, or the diff is full of `+`
+structural lines and the wait ends early. `geometry` is ignored for action diffs
+and for `launch`'s tree.
 
 `app` is a name ("Brave Browser"), a name prefix ("Brave"), a bundle id, or a pid.
 `keepFront` restores whatever app was in front before an action; off by
