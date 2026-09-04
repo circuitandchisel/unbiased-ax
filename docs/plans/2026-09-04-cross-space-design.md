@@ -62,7 +62,7 @@ Measured:
 | what | result |
 |---|---|
 | scan 3000 element ids (Brave) | 48 ms — about 16 µs per miss |
-| window element ids observed | 45–55, 181, 209 — allocated early, small |
+| window element ids observed | 45–55, 181, 209 — allocated early, small; Chrome's window 104 was element 209 |
 | Brave's fullscreen window, off-Space, walked | 477 elements in 31 ms, including an `AXWebArea` with 302 elements under it |
 | Notes (Cocoa), off-Space, walked | 156 elements in 54 ms |
 | element rebuilt from a from-scratch token vs the public `AXWindows` element | `CFEqual` true, `CFHash` equal, same window id |

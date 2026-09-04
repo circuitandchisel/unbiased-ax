@@ -36,7 +36,7 @@ public final class LiveBackend: Backend {
   private func appElement(_ a: NSRunningApplication) -> AXElement {
     let e = AXUIElementCreateApplication(a.processIdentifier)
     // One unresponsive app must never hang the whole bridge.
-    AXUIElementSetMessagingTimeout(e, 1.0)
+    AXUIElementSetMessagingTimeout(e, RemoteToken.messagingTimeout)
     return AXElement(ref: e)
   }
 

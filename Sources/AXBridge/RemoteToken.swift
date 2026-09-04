@@ -1,4 +1,3 @@
-import AppKit
 import ApplicationServices
 import CoreGraphics
 import Darwin
@@ -28,10 +27,15 @@ enum RemoteToken {
   private static let windowOf = sym("_AXUIElementGetWindow", as: WindowOf.self)
 
   static var available: Bool { create != nil && tokenOf != nil && windowOf != nil }
-  static let tag: UInt32 = 0x636f636f // 'coco'
+  private static let tag: UInt32 = 0x636f636f // 'coco'
+  /// The bridge's per-message AX timeout. One unresponsive app must never hang
+  /// the whole bridge; a token-built element does not inherit the app element's
+  /// setting, so it is applied here as well as in LiveBackend.appElement.
+  static let messagingTimeout: Float = 1.0
 
-  /// The element with this internal id, or nil if the symbol is missing. The
-  /// element may still be invalid — the first attribute read says (-25202).
+  /// The element with this internal id, or nil if the symbol is missing or
+  /// HIServices rejects the token. The element may still be invalid — the first
+  /// attribute read says (-25202).
   static func element(pid: pid_t, elementId: UInt32) -> AXUIElement? {
     guard let create else { return nil }
     var d = Data(count: 20)
@@ -40,7 +44,9 @@ enum RemoteToken {
       b.storeBytes(of: tag, toByteOffset: 8, as: UInt32.self)
       b.storeBytes(of: elementId, toByteOffset: 12, as: UInt32.self)
     }
-    return create(d as CFData)?.takeRetainedValue()
+    guard let el = create(d as CFData)?.takeRetainedValue() else { return nil }
+    AXUIElementSetMessagingTimeout(el, Self.messagingTimeout)
+    return el
   }
 
   /// The window-server id behind a window element.
@@ -51,11 +57,11 @@ enum RemoteToken {
   }
 
   /// The internal element id inside an existing element's token, or nil when
-  /// the token is not the 'coco' shape this code understands.
+  /// the token is not the 20-byte 'coco' shape this code understands.
   static func elementId(of el: AXUIElement) -> UInt32? {
     guard let tokenOf, let t = tokenOf(el)?.takeRetainedValue() else { return nil }
     let d = t as Data
-    guard d.count >= 16 else { return nil }
+    guard d.count == 20 else { return nil }
     let seen = d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
     guard seen == tag else { return nil }
     return d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self) }
