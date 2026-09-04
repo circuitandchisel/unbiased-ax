@@ -113,3 +113,4 @@ does. It costs the browser measurable work per page, so it is opt-in.
     docs/PROTOCOL.md          the wire protocol
     docs/INTEGRATION.md       how unbiased-app consumes this
     docs/plans/               the implementation plan this was built from
+    scripts/probe/            the probes that established the cross-Space path — see docs/plans/2026-09-04-cross-space-design.md
