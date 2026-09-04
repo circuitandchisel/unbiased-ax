@@ -19,6 +19,19 @@ public enum Differ {
     return lines.isEmpty ? "(no changes)" : lines.joined(separator: "\n")
   }
 
+  /// Whether anything changed at all, without building the text. Used to poll
+  /// a just-acted-on app until it has reacted: rendering a diff only to check
+  /// whether it says "(no changes)" would allocate a tree of strings per poll.
+  public static func changed(from before: Snapshot, to after: Snapshot) -> Bool {
+    if before.nodes.count != after.nodes.count { return true }
+    let old = Dictionary(uniqueKeysWithValues: before.nodes.map { ($0.id, $0) })
+    for n in after.nodes {
+      guard let o = old[n.id] else { return true }
+      if o != n { return true }
+    }
+    return false
+  }
+
   /// [2,3,4,9] -> "2-4, 9"
   static func ranges(_ ids: [Int]) -> String {
     var out: [String] = []

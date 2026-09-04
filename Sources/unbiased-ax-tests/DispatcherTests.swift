@@ -27,9 +27,17 @@ final class FakeBackend: Backend {
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     lastOptions = options
+    snapshotCount += 1
+    // Once the app has "rendered", the tree gains a node so the diff is real.
+    let late = snapshotsUntilChange > 0 && snapshotCount > snapshotsUntilChange
     var reg = registries[app] ?? IdRegistry()
     defer { registries[app] = reg }
-    return Snapshot.build(root: tree, source: FakeSource(), registry: &reg, options: options)
+    let root = late
+      ? group("w", [button("w/ok", "OK"),
+                    FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20)),
+                    button("w/late", "Result")], title: "Win")
+      : tree
+    return Snapshot.build(root: root, source: FakeSource(), registry: &reg, options: options)
   }
   func offscreenWindows(app: String) throws -> Int { offscreen }
   var iconPNG: Data? = Data([0x89, 0x50, 0x4E, 0x47])
@@ -56,6 +64,10 @@ final class FakeBackend: Backend {
     launched.append(app)
     return launchSucceeds
   }
+  /// Snapshots before the tree changes. Models an app that renders its
+  /// response a beat after the action returns — which is every real app.
+  var snapshotsUntilChange = 0
+  private var snapshotCount = 0
   var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
   func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
 }
@@ -295,5 +307,51 @@ func runDesktopReachTests() {
     let b = FakeBackend()
     let out = call(Dispatcher(backend: b), #"{"id":1,"method":"scroll","params":{"app":"Brave Browser","id":999,"dy":-3}}"#)
     try expect(out.contains("no_such_element"), out)
+  }
+}
+
+func runSettleTests() {
+  print("Waiting for an app to react")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  // Pressing return in Maps' search field returned "(no changes)" while the
+  // three results were on their way. The model, told nothing had happened,
+  // read again to find out — seven redundant round trips in one task.
+
+  test("an action waits for the app to react before reporting no change") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#) // baseline
+    b.snapshotsUntilChange = 2 // the app renders on the third look
+    let out = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"return"}}"#)
+    try expect(!out.contains("(no changes)"), "it gave up before the app answered: \(out)")
+    try expect(out.contains("Result"), "the late-rendered element should be in the diff: \(out)")
+  }
+
+  test("an action whose effect is already visible does not wait") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.snapshotsUntilChange = 1 // changed by the very next look
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains("Result"), out)
+    // It pays the FLOOR, not the deadline. The floor exists because Maps'
+    // search results land at ~477ms and an earlier return reported only the
+    // echo of the keystroke that asked for them.
+    try expect(elapsed < 1.2, "a visible change must not pay the full deadline (took \(elapsed)s)")
+    try expect(elapsed >= 0.5, "the floor is the point — returning sooner reports a half-rendered app (took \(elapsed)s)")
+  }
+
+  test("an action that genuinely changes nothing still says so, and bounds the wait") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains("(no changes)"), out)
+    try expect(elapsed < 3.0, "the wait must be bounded (took \(elapsed)s)")
   }
 }

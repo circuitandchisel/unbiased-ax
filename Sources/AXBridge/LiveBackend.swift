@@ -240,19 +240,22 @@ public final class LiveBackend: Backend {
     proc.waitUntilExit()
     guard proc.terminationStatus == 0 else { return false }
 
-    // Readable, not just running: poll until the AX layer answers for it. An
-    // app can be running for a beat before it has built a window.
+    // READABLE, not merely running. The distinction matters: an app whose
+    // windows are all on another Space is not in the accessibility tree, and
+    // an earlier version of this loop accepted `offscreen > 0` as good enough
+    // — so it returned in 0.2s with nothing readable and the caller got an
+    // 8-element menu bar. Wait for a window on THIS Space; activating one that
+    // lives elsewhere means macOS has a Space switch to finish first.
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      if let a = try? resolve(app) {
-        let wins = (try? windows(app: String(a.processIdentifier))) ?? []
-        let off = (try? offscreenWindows(app: String(a.processIdentifier))) ?? 0
-        // Either a window here, or one that exists elsewhere — both mean the
-        // app is up, and the caller's hint will explain an off-Space one.
-        if !wins.isEmpty || off > 0 { return true }
+      if let a = try? resolve(app), let wins = try? windows(app: String(a.processIdentifier)), !wins.isEmpty {
+        return true
       }
-      Thread.sleep(forTimeInterval: 0.25)
+      Thread.sleep(forTimeInterval: 0.2)
     }
+    // Out of time. The app IS running, so say so rather than reporting a
+    // failed launch — the read that follows carries the off-Space hint, which
+    // tells the caller to raise it.
     return (try? resolve(app)) != nil
   }
 

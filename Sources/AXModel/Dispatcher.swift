@@ -153,11 +153,61 @@ public final class Dispatcher {
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
   private func afterAction(_ app: String, _ p: [String: Any]) throws -> Any {
-    let snap = try backend.snapshot(app: app, options: options(p))
+    // Snapshot AFTER the app has had a chance to react, not the instant the
+    // action returns. Measured: pressing return in Maps' search field produced
+    // "(no changes)" while the three results were on their way, and the model
+    // — told nothing had happened — read again to find out. Seven redundant
+    // reads in one task, each a whole round trip, because this returned too
+    // early.
+    //
+    // Polled rather than slept: an action whose effect is already visible pays
+    // nothing, and only one that truly changes nothing waits out the deadline.
+    let opts = options(p)
+    var snap = try backend.snapshot(app: app, options: opts)
+    if let prev = last[app] {
+      let started = Date()
+      var stableLooks = 0
+      // Settle policy, set from measurement rather than taste. Typing into
+      // Maps' search field and pressing return:
+      //   ~120ms  the FIELD updates — the echo of our own keystroke
+      //   ~477ms  the three results actually appear
+      // Returning at the first change reported only the echo. Returning at the
+      // first quiescence returned at 305ms, in the stable gap between the two,
+      // and reported the echo again. So: require both a quiet tree AND a floor
+      // under how early we are willing to call it.
+      //
+      // The cost of being wrong here is a whole model round trip — seconds —
+      // which is precisely what the model spent seven of in one task, reading
+      // again because the action said nothing had happened.
+      while Date().timeIntervalSince(started) < Self.settleDeadline {
+        let elapsed = Date().timeIntervalSince(started)
+        let reacted = Differ.changed(from: prev, to: snap)
+        if reacted && stableLooks >= 1 && elapsed >= Self.settleFloor { break }
+        Thread.sleep(forTimeInterval: Self.settleStep)
+        let again = try backend.snapshot(app: app, options: opts)
+        stableLooks = Differ.changed(from: snap, to: again) ? 0 : stableLooks + 1
+        snap = again
+      }
+    }
     let diff = last[app].map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
     last[app] = snap
     return ["ok": true, "diff": diff]
   }
+
+  /// How long to wait for an app to react before reporting no change, and how
+  /// often to look. Chosen from what Maps needs: results and a route sheet
+  /// arrive within a few hundred ms, a Transit tab can take seconds — but a
+  /// tab that slow is worth an explicit wait from the caller rather than
+  /// making every no-op action pay for it here.
+  /// Upper bound on the wait. An action that genuinely changes nothing pays
+  /// this in full, which is the honest cost of not being able to tell a no-op
+  /// from an app that is still thinking.
+  static let settleDeadline = 1.5
+  /// Do not declare an app settled before this, once it has reacted at all.
+  /// Maps' results land at ~477ms; anything under that reports the keystroke
+  /// echo and calls it a result.
+  static let settleFloor = 0.6
+  static let settleStep = 0.1
 
   private func known(_ app: String, _ id: Int) throws {
     guard let snap = last[app], snap.nodes.contains(where: { $0.id == id }) else { throw BridgeError.noSuchElement(id) }
