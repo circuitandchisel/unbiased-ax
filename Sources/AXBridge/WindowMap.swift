@@ -16,23 +16,33 @@ struct WindowMap {
   /// early (ids 45–209 observed), but a window opened late in a long Chromium
   /// session has a high id; this bounds the hunt. Paid at most once per
   /// refresh that finds an unsettled wid, and to the cap only when one of them
-  /// has no element — the system strips, so once per app. Not resumed from the
-  /// highest id seen: that could not skip the strips' to-cap scan and would be
-  /// unsafe if an app ever recycled ids.
+  /// has no element — the system strips: once per app that has a real window,
+  /// once per emptyRetry for one that does not. Not resumed from the highest
+  /// id seen: that could not skip the strips' to-cap scan and would be unsafe
+  /// if an app ever recycled ids.
   static let scanCap: UInt32 = 65_536
   /// A full cap scan takes about a second when the app answers. Past this the
   /// app is not answering, and a scan that keeps going is a hang, not a scan.
   static let scanBudget: TimeInterval = 3.0
+  /// A refresh within this of the last one is a no-op: one verb calls in twice
+  /// (snapshot, then the offscreen count), and the settle loop polls every
+  /// 100ms. A window that appears inside the TTL is seen on the next refresh.
+  static let refreshTTL: TimeInterval = 0.5
+  /// While the map holds no real window — a fresh launch, an app with every
+  /// window closed — the strips are re-scanned this often, so launch finds its
+  /// window within a second of it being vended and a windowless app costs at
+  /// most one scan per second, not one per read.
+  static let emptyRetry: TimeInterval = 1.0
 
   private(set) var byWid: [CGWindowID: AXElement] = [:]
   /// Every wid the window server listed that a completed scan has settled,
-  /// mapped or not — but only once the map holds at least one real window.
-  /// Until then nothing is settled, so a window vended after we looked (a
-  /// fresh launch) is found on the next refresh. After that, unmapped wids are
-  /// the strips and are settled once per app. Residual gap: a SECOND window
-  /// first vended later stays unmapped until it closes; recorded in the design.
-  /// An aborted scan settles nothing either.
+  /// mapped or not: what a full scan did not find will not appear until
+  /// something vends it. While the map holds no real window that could be any
+  /// moment (a fresh launch), so the settled set expires every emptyRetry. An
+  /// aborted scan settles nothing.
   private var settled: Set<CGWindowID> = []
+  private var lastRefresh = Date.distantPast
+  private var emptyScanAt: Date? = nil
 
   /// Sorted by wid — creation order — so root-child order, and where
   /// maxElements cuts, is the same on every read. Dictionary order moved the
@@ -58,7 +68,10 @@ struct WindowMap {
   /// them would be a hang measured in hours. The wall-clock budget is the
   /// second net, for a hang that starts mid-scan or inside windowId(of:).
   mutating func refresh(pid: pid_t) {
+    guard Date().timeIntervalSince(lastRefresh) >= Self.refreshTTL else { return }
+    lastRefresh = Date()
     let live = Self.serverWindows(pid: pid)
+    if byWid.isEmpty, let t = emptyScanAt, Date().timeIntervalSince(t) >= Self.emptyRetry { settled = [] }
     byWid = byWid.filter { live.contains($0.key) }
     settled.formIntersection(live)
     var missing = live.subtracting(settled)
@@ -79,7 +92,7 @@ struct WindowMap {
       let (err, role) = Self.attr(el, kAXRoleAttribute)
       if err == .cannotComplete { aborted = true; break }
       guard err == .success, role == "AXWindow",
-            let wid = RemoteToken.windowId(of: el), missing.contains(wid) else { continue }
+            let wid = RemoteToken.windowId(of: el), live.contains(wid) else { continue }
       let (serr, sub) = Self.attr(el, kAXSubroleAttribute)
       if serr == .cannotComplete { aborted = true; break }
       if Self.realSubroles.contains(sub ?? "") { byWid[wid] = AXElement(ref: el) }
@@ -87,7 +100,10 @@ struct WindowMap {
     }
     let ms = Int(Date().timeIntervalSince(started) * 1000)
     Self.debugLog("window scan pid \(pid): \(id) ids in \(ms)ms, \(byWid.count) real window(s), \(missing.count) wid(s) with no element\(aborted ? ", ABORTED: the app is not answering" : "")")
-    if !aborted { settled = byWid.isEmpty ? [] : live }
+    if !aborted {
+      settled = live
+      emptyScanAt = byWid.isEmpty ? Date() : nil
+    }
   }
 
   private static func wake(pid: pid_t) {
@@ -95,7 +111,7 @@ struct WindowMap {
     AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
     for name in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
       var v: CFTypeRef?
-      _ = AXUIElementCopyAttributeValue(root, name as CFString, &v)
+      if AXUIElementCopyAttributeValue(root, name as CFString, &v) == .cannotComplete { return }
     }
   }
 
@@ -132,9 +148,10 @@ struct WindowMap {
       let root = AXUIElementCreateApplication(a.processIdentifier)
       AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
       var v: CFTypeRef?
-      if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v) == .success, let pub = axElements(v).first {
+      let err = AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v)
+      if err == .success, let pub = axElements(v).first {
         withPublic.append((a, pub))
-      } else {
+      } else if err != .cannotComplete {
         without.append(a)
       }
     }

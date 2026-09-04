@@ -28,7 +28,7 @@ public final class LiveBackend: Backend {
 
   public func crossSpace() -> Bool {
     if let v = crossSpaceVerdict { return v }
-    guard Date() >= crossSpaceNextTry else { return false }
+    guard AXIsProcessTrusted(), Date() >= crossSpaceNextTry else { return false }
     crossSpaceNextTry = Date().addingTimeInterval(Self.selfCheckRetry)
     let v = WindowMap.selfCheck()
     crossSpaceVerdict = v
@@ -72,9 +72,9 @@ public final class LiveBackend: Backend {
   }
 
   /// Real windows on other Spaces: what the window server lists that AXWindows
-  /// does not. Empty until the self-check has passed. `appElement` has already
-  /// set the app-wide messaging timeout and RemoteToken sets it per element,
-  /// so the scan cannot hang either.
+  /// does not. Empty until the self-check has passed. RemoteToken sets the
+  /// messaging timeout on every element it mints, and the scan aborts on the
+  /// first timeout, so this cannot hang either.
   private func offSpaceWindows(_ a: NSRunningApplication, here: [AXElement]) -> [AXElement] {
     guard crossSpace() else { return [] }
     var map = windowMaps[a.processIdentifier] ?? WindowMap()
@@ -90,8 +90,7 @@ public final class LiveBackend: Backend {
     let src = LiveSource()
     var reg = registries[a.processIdentifier] ?? IdRegistry()
     var out: [WindowInfo] = []
-    // Parenthesised: a for-in sequence is parsed like an `if` condition, where
-    // a trailing closure would be read as the loop body.
+    // parenthesised: a trailing closure in a for-in sequence draws a confusable-with-body warning
     for (el, onSpace) in (here.map { ($0, true) } + elsewhere.map { ($0, false) }) {
       guard let at = src.attributes(of: el) else { continue }
       var minimized: CFTypeRef?
@@ -111,7 +110,8 @@ public final class LiveBackend: Backend {
   public func offscreenWindows(app: String) throws -> Int {
     let a = try resolve(app)
     if crossSpace() {
-      return offSpaceWindows(a, here: try publicWindows(a)).count
+      // annotation, not the read: an AXWindows timeout here must not sink a tree that already came back
+      return offSpaceWindows(a, here: (try? publicWindows(a)) ?? []).count
     }
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
     return list.filter {
@@ -259,14 +259,12 @@ public final class LiveBackend: Backend {
   /// gets name lookup right for free — Maps lives in /System/Applications, and
   /// hand-rolled directory scanning is a list of places to forget.
   public func launch(app: String, timeout: Double) throws -> Bool {
-    // NOT short-circuited when the app is already running. `open -a` on a
-    // running app activates it, which is exactly what is needed: an app whose
-    // windows are all on another Space is not in the tree, so returning "ok"
-    // without activating handed back a 1-element tree and broke this verb's
-    // whole promise on every use after the first. Activating is also what
-    // "open Maps" means when Maps is already open somewhere else.
+    // NOT short-circuited when the app is already running. It IS
+    // short-circuited when a readable window exists — on this Space, or
+    // anywhere once cross-Space is on — because then there is nothing to open
+    // and no reason to touch focus.
     let alreadyHere = ((try? windows(app: app)) ?? []).isEmpty == false
-    if alreadyHere { return true } // a window is right here; do not touch focus
+    if alreadyHere { return true } // a readable window exists; do not touch focus
 
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")

@@ -203,9 +203,10 @@ by hand and by a runtime self-check.
   session has a high element id. The cap bounds the cost to about a second,
   once, and the monotonic-id optimisation makes the common case cheap.
 - **A second window first vended after the map settled** stays unmapped until
-  it closes: the wake reads only the main and focused windows. Not seen on the
-  measured apps (every existing window had been shown, hence vended); recorded
-  so nobody chases it as a scan bug.
+  the next scan for any reason (a new wid, or the empty-map retry): the wake
+  reads only the main and focused windows. Not seen on the measured apps
+  (every existing window had been shown, hence vended); recorded so nobody
+  chases it as a scan bug.
 
 ## Found along the way, out of scope
 

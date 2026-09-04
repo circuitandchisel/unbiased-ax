@@ -77,9 +77,10 @@ public protocol Backend: AnyObject {
   func crossSpace() -> Bool
   func apps() -> [AppInfo]
   func windows(app: String) throws -> [WindowInfo]
-  /// Windows the window server knows about that the Accessibility API does
-  /// not list — on another Space, or hidden. AXWindows only sees the current
-  /// Space, so without this a model cannot tell "no windows" from "elsewhere".
+  /// Real windows on another Space. With crossSpace() true they ARE in the
+  /// tree and this is a count for the caller's information; with it false
+  /// they are the windows the window server knows that AXWindows will not
+  /// list, and the only signal that "no windows" really means "elsewhere".
   func offscreenWindows(app: String) throws -> Int
   /// The app's icon as PNG bytes. A transcript that says "press #643 in Brave"
   /// reads far better beside Brave's own icon than beside a terminal glyph.
