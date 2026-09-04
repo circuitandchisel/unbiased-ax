@@ -355,3 +355,44 @@ func runSettleTests() {
     try expect(elapsed < 3.0, "the wait must be bounded (took \(elapsed)s)")
   }
 }
+
+func runWindowCountTests() {
+  print("Counting windows a person could switch to")
+
+  // Measured on a freshly launched Maps with ONE window: it owns six layer-0
+  // windows. Counting all of them reported "6 windows on another Space", and
+  // the read-side recovery raised the app eight times in one task on the
+  // strength of that number.
+
+  test("a real window counts") {
+    try expect(isUserWindow(width: 1024, height: 768, layer: 0, onscreen: false),
+      "Maps' actual 1024x768 window must count")
+    try expect(isUserWindow(width: 500, height: 500, layer: 0, onscreen: false),
+      "a small panel still counts — over-counting by one only wastes a raise")
+  }
+
+  test("the full-width strips a Catalyst app owns do not count") {
+    // Four of these, exactly: 3840x30.
+    try expect(!isUserWindow(width: 3840, height: 30, layer: 0, onscreen: false),
+      "a 30px strip spanning the display is not a window anyone switches to")
+    try expect(!isUserWindow(width: 0, height: 0, layer: 0, onscreen: false), "zero-sized")
+    try expect(!isUserWindow(width: 60, height: 60, layer: 0, onscreen: false), "tiny surfaces")
+  }
+
+  test("a window already on this Space is not counted as elsewhere") {
+    try expect(!isUserWindow(width: 1024, height: 768, layer: 0, onscreen: true),
+      "onscreen means it is HERE, and the caller reads it from the tree instead")
+  }
+
+  test("panels, menus and shadows above the window layer do not count") {
+    try expect(!isUserWindow(width: 1024, height: 768, layer: 3, onscreen: false),
+      "only layer 0 holds ordinary windows")
+    try expect(!isUserWindow(width: 1024, height: 768, layer: 25, onscreen: false), "status items")
+  }
+
+  test("the measured Maps window set now counts 2, not 6") {
+    let measured: [(Double, Double)] = [(500, 500), (1024, 768), (3840, 30), (3840, 30), (3840, 30), (3840, 30)]
+    let n = measured.filter { isUserWindow(width: $0.0, height: $0.1, layer: 0, onscreen: false) }.count
+    try expectEqual(n, 2, "the four strips must fall out")
+  }
+}

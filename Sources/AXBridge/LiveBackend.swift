@@ -69,10 +69,15 @@ public final class LiveBackend: Backend {
   public func offscreenWindows(app: String) throws -> Int {
     let a = try resolve(app)
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
-    return list.filter {
-      ($0[kCGWindowOwnerPID as String] as? Int32) == a.processIdentifier
-        && (($0[kCGWindowLayer as String] as? Int) ?? 1) == 0
-        && !(($0[kCGWindowIsOnscreen as String] as? Bool) ?? false)
+    return list.filter { w in
+      guard (w[kCGWindowOwnerPID as String] as? Int32) == a.processIdentifier else { return false }
+      let bounds = w[kCGWindowBounds as String] as? [String: Any]
+      return isUserWindow(
+        width: (bounds?["Width"] as? Double) ?? 0,
+        height: (bounds?["Height"] as? Double) ?? 0,
+        layer: (w[kCGWindowLayer as String] as? Int) ?? 1,
+        onscreen: (w[kCGWindowIsOnscreen as String] as? Bool) ?? false,
+      )
     }.count
   }
 

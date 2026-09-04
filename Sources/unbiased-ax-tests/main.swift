@@ -11,6 +11,7 @@ runDifferTests()
 runDispatcherTests()
 runDesktopReachTests()
 runSettleTests()
+runWindowCountTests()
 runServerTests()
 
 finish()

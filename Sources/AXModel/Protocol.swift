@@ -65,6 +65,25 @@ public enum BridgeError: Error {
 }
 
 /// What the live adapter provides. Everything the dispatcher needs, nothing more.
+/// Whether a window the window server reports is one a person could actually
+/// switch to. Counting every layer-0 window an app owns badly over-counts on
+/// UIKit-for-Mac apps: a freshly launched Maps with ONE window owns six, the
+/// other five being a 500x500 unnamed panel and four full-display-width strips
+/// 30 pixels tall (measured: 3840x30). Reported as "6 windows on another
+/// Space", that number drove eight automatic screen-stealing raises in a
+/// single task.
+///
+/// Size is the discriminator, not the name: real windows are substantial,
+/// while the internal surfaces are either thin strips or tiny. Deliberately
+/// generous — a genuine small palette still counts, because over-counting by
+/// one is a wasted raise while under-counting hides a window the caller needs
+/// to be told about.
+public func isUserWindow(width: Double, height: Double, layer: Int, onscreen: Bool) -> Bool {
+  guard layer == 0 else { return false }
+  guard !onscreen else { return false }
+  return width >= 120 && height >= 120
+}
+
 public protocol Backend: AnyObject {
   func isTrusted() -> Bool
   func apps() -> [AppInfo]
