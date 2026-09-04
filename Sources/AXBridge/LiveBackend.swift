@@ -61,7 +61,8 @@ public final class LiveBackend: Backend {
       let id = reg.id(for: el)
       elements[a.processIdentifier, default: [:]][id] = el
       out.append(WindowInfo(id: id, title: at.title ?? "", x: at.x, y: at.y, width: at.width, height: at.height,
-                            minimized: (minimized as? Bool) ?? false, focused: at.focused))
+                            minimized: (minimized as? Bool) ?? false, focused: at.focused,
+                            onSpace: true))   // AXWindows lists only this Space; Task 5 adds the others
     }
     registries[a.processIdentifier] = reg
     return out

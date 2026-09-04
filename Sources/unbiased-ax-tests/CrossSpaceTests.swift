@@ -22,4 +22,11 @@ func runCrossSpaceTests() {
     try expect(out.contains("[other Space]"), "and the model can see it is elsewhere: \(out)")
     try expect(out.contains(#""onSpace":false"#), out)
   }
+
+  test("a window on this Space carries no Space marker") {
+    let b = FakeBackend(); b.crossSpaceOn = true   // the flag alone must not mark anything
+    let out = call(Dispatcher(backend: b), #"{"id":6,"method":"windows","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""onSpace":true"#), out)
+    try expect(!out.contains("other Space"), out)
+  }
 }

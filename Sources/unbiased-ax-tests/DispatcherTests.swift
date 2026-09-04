@@ -26,8 +26,8 @@ final class FakeBackend: Backend {
   }
   func windows(app: String) throws -> [WindowInfo] {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
-    let win = WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true, onSpace: !hideWindows)
     if hideWindows && !crossSpaceOn { return [] }
+    let win = WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true, onSpace: !hideWindows)
     return [win]
   }
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
