@@ -213,7 +213,14 @@ public final class LiveBackend: Backend {
   /// gets name lookup right for free — Maps lives in /System/Applications, and
   /// hand-rolled directory scanning is a list of places to forget.
   public func launch(app: String, timeout: Double) throws -> Bool {
-    if (try? resolve(app)) != nil { return true }
+    // NOT short-circuited when the app is already running. `open -a` on a
+    // running app activates it, which is exactly what is needed: an app whose
+    // windows are all on another Space is not in the tree, so returning "ok"
+    // without activating handed back a 1-element tree and broke this verb's
+    // whole promise on every use after the first. Activating is also what
+    // "open Maps" means when Maps is already open somewhere else.
+    let alreadyHere = ((try? windows(app: app)) ?? []).isEmpty == false
+    if alreadyHere { return true } // a window is right here; do not touch focus
 
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
