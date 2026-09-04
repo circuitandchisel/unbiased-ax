@@ -57,6 +57,13 @@ creates elements. It cannot be derived from a window id, so the mechanism is a
 fast `-25202 kAXErrorInvalidUIElement`. This is exactly what AltTab ships as
 `windowsByBruteForce`; yabai uses the same symbols.
 
+Element ids are allocated when a window is first **vended** to an AX client, not
+when it is created. Measured 2026-09-04 with a Calculator launched by `open -g`:
+its one window had no element until `AXMainWindow` was read on the app root
+(`AXWindows`, which lists nothing off-screen, vends nothing); one read later the
+scan found it as element 42. So the scan is preceded by reading `AXMainWindow`
+and `AXFocusedWindow`, and a map that holds no real window settles nothing.
+
 Measured:
 
 | what | result |
@@ -93,8 +100,9 @@ a cache:
 - Stop the scan as soon as every unmapped wid is found. Hard cap on the range
   (65,536 ids is about a second at the measured rate) so a wid that has no AX
   element cannot make us scan forever.
-- Remember wids that mapped to nothing until they disappear, so the system
-  strips do not trigger a rescan on every read.
+- Remember wids that mapped to nothing until they disappear — but only once at
+  least one real window is mapped, so a fresh launch keeps looking until its
+  window is vended. The system strips then cost one scan per app.
 - Element ids grow monotonically within a process, so a rescan for a window
   opened later can start from the highest id seen.
 
@@ -194,6 +202,10 @@ by hand and by a runtime self-check.
 - **Scan cost for late windows.** A window opened after a long Chromium
   session has a high element id. The cap bounds the cost to about a second,
   once, and the monotonic-id optimisation makes the common case cheap.
+- **A second window first vended after the map settled** stays unmapped until
+  it closes: the wake reads only the main and focused windows. Not seen on the
+  measured apps (every existing window had been shown, hence vended); recorded
+  so nobody chases it as a scan bug.
 
 ## Found along the way, out of scope
 

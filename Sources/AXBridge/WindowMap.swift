@@ -26,8 +26,12 @@ struct WindowMap {
 
   private(set) var byWid: [CGWindowID: AXElement] = [:]
   /// Every wid the window server listed that a completed scan has settled,
-  /// mapped or not. What a full scan did not find will not appear later.
-  /// An aborted scan settles nothing, so the next refresh tries again.
+  /// mapped or not — but only once the map holds at least one real window.
+  /// Until then nothing is settled, so a window vended after we looked (a
+  /// fresh launch) is found on the next refresh. After that, unmapped wids are
+  /// the strips and are settled once per app. Residual gap: a SECOND window
+  /// first vended later stays unmapped until it closes; recorded in the design.
+  /// An aborted scan settles nothing either.
   private var settled: Set<CGWindowID> = []
 
   /// Sorted by wid — creation order — so root-child order, and where
@@ -59,6 +63,12 @@ struct WindowMap {
     settled.formIntersection(live)
     var missing = live.subtracting(settled)
     guard !missing.isEmpty else { return }
+    // Element ids exist only once a window has been VENDED to an AX client,
+    // not from creation (measured: a Calculator launched with -g had no
+    // element until AXMainWindow was read; AXWindows lists nothing off-screen
+    // and vends nothing). Two reads on the root vend what a fresh app has, so
+    // the scan below can find it.
+    Self.wake(pid: pid)
     let started = Date()
     var id: UInt32 = 0
     var aborted = false
@@ -77,7 +87,16 @@ struct WindowMap {
     }
     let ms = Int(Date().timeIntervalSince(started) * 1000)
     Self.debugLog("window scan pid \(pid): \(id) ids in \(ms)ms, \(byWid.count) real window(s), \(missing.count) wid(s) with no element\(aborted ? ", ABORTED: the app is not answering" : "")")
-    if !aborted { settled = live }
+    if !aborted { settled = byWid.isEmpty ? [] : live }
+  }
+
+  private static func wake(pid: pid_t) {
+    let root = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
+    for name in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+      var v: CFTypeRef?
+      _ = AXUIElementCopyAttributeValue(root, name as CFString, &v)
+    }
   }
 
   private static func attr(_ el: AXUIElement, _ a: String) -> (AXError, String?) {
