@@ -50,6 +50,14 @@ final class FakeBackend: Backend {
     keepFrontSeen.append(keepFront); setValues.append((app, id, value))
   }
   func raise(app: String, windowId: Int?) throws {}
+  var launched: [String] = []
+  var launchSucceeds = true
+  func launch(app: String, timeout: Double) throws -> Bool {
+    launched.append(app)
+    return launchSucceeds
+  }
+  var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
+  func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
 }
 
 func runDispatcherTests() {
@@ -220,5 +228,72 @@ func runDispatcherTests() {
     let out = call(Dispatcher(backend: FakeBackend()), #"{"id":19,"method":"tree","params":{}}"#)
     try expect(out.contains(#""code":"bad_params""#), out)
     try expect(out.contains("app"), out)
+  }
+}
+
+func runDesktopReachTests() {
+  print("Reaching an app the user has not opened")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  // The failure this fixes: a read of an app whose windows are all elsewhere
+  // returns the menu bar and nothing else. Told nothing, a model concludes the
+  // tool is broken and leaves for a shell.
+
+  test("a read says so when every window is on another Space") {
+    let b = FakeBackend(); b.offscreen = 5; b.hideWindows = true
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains("\"offscreen\":5"), "a read must report the count, not just windows: \(out)")
+    try expect(out.contains("call raise for this app first"), "and must say what to do about it: \(out)")
+  }
+
+  test("a read does not tell the model to raise when windows are already here") {
+    let b = FakeBackend(); b.offscreen = 5 // windows visible AND some elsewhere
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains("do not raise"), "raising when a window is here steals the screen for nothing: \(out)")
+  }
+
+  test("a read of an app that is entirely here says nothing about Spaces") {
+    let out = call(Dispatcher(backend: FakeBackend()), #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(!out.contains("hint"), "no hint when there is nothing to hint about: \(out)")
+    try expect(out.contains("\"offscreen\":0"), "the count is still reported: \(out)")
+  }
+
+  test("find carries the same warning as tree") {
+    let b = FakeBackend(); b.offscreen = 3; b.hideWindows = true
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"find","params":{"app":"Brave Browser","title":"OK"}}"#)
+    try expect(out.contains("call raise for this app first"), "a search that finds nothing must say why: \(out)")
+  }
+
+  test("launch opens an app and hands back its tree, so the model need not poll") {
+    let b = FakeBackend()
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
+    try expectEqual(b.launched, ["Brave Browser"], "the app should have been launched")
+    try expect(out.contains("\"tree\""), "launch returns the tree: reading is always the next move: \(out)")
+    try expect(out.contains("\"ok\":true"), out)
+  }
+
+  test("a launch that cannot find the app says so instead of failing silently") {
+    let b = FakeBackend(); b.launchSucceeds = false
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"launch","params":{"app":"Nonesuch"}}"#)
+    try expect(out.contains("launch_failed"), out)
+    try expect(out.contains("not something this tool can create"), "the model must not retry forever: \(out)")
+  }
+
+  test("scroll needs a direction and a known element") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#) // so ids are known
+    let zero = call(d, #"{"id":2,"method":"scroll","params":{"app":"Brave Browser","id":1,"dy":0}}"#)
+    try expect(zero.contains("bad_params"), "a scroll of zero is a no-op worth rejecting: \(zero)")
+    let ok = call(d, #"{"id":3,"method":"scroll","params":{"app":"Brave Browser","id":1,"dy":-3}}"#)
+    try expect(!ok.contains("error"), ok)
+    try expectEqual(b.scrolls.count, 1, "one scroll should have reached the backend")
+    try expectEqual(b.scrolls.first?.dy ?? 0, -3, "direction must be passed through unchanged")
+  }
+
+  test("scroll refuses an id the model never read") {
+    let b = FakeBackend()
+    let out = call(Dispatcher(backend: b), #"{"id":1,"method":"scroll","params":{"app":"Brave Browser","id":999,"dy":-3}}"#)
+    try expect(out.contains("no_such_element"), out)
   }
 }

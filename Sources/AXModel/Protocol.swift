@@ -32,6 +32,7 @@ public enum BridgeError: Error {
   case noSuchWindow(Int)
   case actionFailed(String)
   case timeout(String)
+  case launchFailed(String)
 
   public var code: String {
     switch self {
@@ -43,6 +44,7 @@ public enum BridgeError: Error {
     case .noSuchWindow: return "no_such_window"
     case .actionFailed: return "action_failed"
     case .timeout: return "timeout"
+    case .launchFailed: return "launch_failed"
     }
   }
 
@@ -57,6 +59,7 @@ public enum BridgeError: Error {
     case .noSuchWindow(let id): return "No window \(id). Call windows."
     case .actionFailed(let m): return m
     case .timeout(let m): return "The app did not respond: \(m)"
+    case .launchFailed(let m): return m
     }
   }
 }
@@ -74,6 +77,15 @@ public protocol Backend: AnyObject {
   /// reads far better beside Brave's own icon than beside a terminal glyph.
   func appIcon(app: String) throws -> Data
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot
+  /// Launch an app by name or bundle id and wait until the Accessibility API
+  /// can actually see it. Without this the model has no sanctioned way to open
+  /// an app that is not running, and reaches for a shell — measured: one
+  /// `open -a Maps` was enough to lose it to twenty shell calls, ending in a
+  /// hand-written Swift AX dumper that reimplemented this bridge.
+  func launch(app: String, timeout: Double) throws -> Bool
+  /// Scroll the element's container. AX exposes no scroll verb, so this posts
+  /// real scroll-wheel events at the element's midpoint, to the app's pid.
+  func scroll(app: String, id: Int, dx: Int, dy: Int) throws
   /// `keepFront` restores whatever application was in front before the action.
   /// OFF by default, and that default is the important part: measured on a
   /// native app, setValue does not pull its app forward at all. Restoring

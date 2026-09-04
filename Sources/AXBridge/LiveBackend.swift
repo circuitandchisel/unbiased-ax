@@ -200,6 +200,86 @@ public final class LiveBackend: Backend {
     up.postToPid(a.processIdentifier)
   }
 
+  /// Launch by name or bundle id, then wait until the app is actually readable
+  /// rather than merely running. `open` returns as soon as the process starts,
+  /// which is well before AXWindows lists anything — a model that launched and
+  /// read immediately got an empty tree and concluded the tool did not work.
+  /// Waiting here is cheaper than teaching every caller to poll.
+  ///
+  /// This shells out to /usr/bin/open rather than NSWorkspace, deliberately.
+  /// NSWorkspace.openApplication delivers its result on the main run loop,
+  /// which a stdio tool does not run: the app launched and the completion
+  /// handler never fired, so a successful launch reported failure. `open` also
+  /// gets name lookup right for free — Maps lives in /System/Applications, and
+  /// hand-rolled directory scanning is a list of places to forget.
+  public func launch(app: String, timeout: Double) throws -> Bool {
+    if (try? resolve(app)) != nil { return true }
+
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    // A bundle id needs -b; everything else is a name or a path for -a. Guessing
+    // by shape is safe here because the two flags fail loudly, not silently.
+    let looksLikeBundleId = app.contains(".") && !app.hasSuffix(".app") && !app.contains("/")
+    // Foreground, deliberately — unlike raise, which is kept to the one case
+    // that needs it. Launching in the background (-g) leaves the new window on
+    // whatever Space the app decides, so it is NOT in the tree and the model
+    // has to raise anyway: two steps, the screen taken regardless, and a
+    // useless read in between. Measured: -g gave back a 1-element tree and an
+    // off-Space hint. A foreground launch is also what "open Maps" means.
+    proc.arguments = [looksLikeBundleId ? "-b" : "-a", app]
+    proc.standardOutput = FileHandle.nullDevice
+    proc.standardError = FileHandle.nullDevice
+    do { try proc.run() } catch { return false }
+    proc.waitUntilExit()
+    guard proc.terminationStatus == 0 else { return false }
+
+    // Readable, not just running: poll until the AX layer answers for it. An
+    // app can be running for a beat before it has built a window.
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if let a = try? resolve(app) {
+        let wins = (try? windows(app: String(a.processIdentifier))) ?? []
+        let off = (try? offscreenWindows(app: String(a.processIdentifier))) ?? 0
+        // Either a window here, or one that exists elsewhere — both mean the
+        // app is up, and the caller's hint will explain an off-Space one.
+        if !wins.isEmpty || off > 0 { return true }
+      }
+      Thread.sleep(forTimeInterval: 0.25)
+    }
+    return (try? resolve(app)) != nil
+  }
+
+  /// The Accessibility API has no scroll verb — kAXScrollToVisibleAction moves
+  /// to a known element, which is no help for "show me more of this list". So
+  /// post real scroll-wheel events at the element's midpoint, to the pid, the
+  /// same way pressKey does: it reaches a background app and cannot land in
+  /// someone else's window.
+  public func scroll(app: String, id: Int, dx: Int, dy: Int) throws {
+    let a = try resolve(app)
+    let (_, el) = try element(app, id)
+    // Move the pointer over the target first: a scroll event is delivered to
+    // whatever is under the cursor, so without this it scrolls the wrong view.
+    var posRef: CFTypeRef?
+    var sizeRef: CFTypeRef?
+    if AXUIElementCopyAttributeValue(el.ref, kAXPositionAttribute as CFString, &posRef) == .success,
+       AXUIElementCopyAttributeValue(el.ref, kAXSizeAttribute as CFString, &sizeRef) == .success,
+       let posVal = posRef as! AXValue?, let sizeVal = sizeRef as! AXValue? {
+      var origin = CGPoint.zero
+      var size = CGSize.zero
+      if AXValueGetValue(posVal, .cgPoint, &origin), AXValueGetValue(sizeVal, .cgSize, &size) {
+        let mid = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        if let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: mid, mouseButton: .left) {
+          move.postToPid(a.processIdentifier)
+        }
+      }
+    }
+    guard let ev = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2,
+                           wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0) else {
+      throw BridgeError.actionFailed("could not create scroll event")
+    }
+    ev.postToPid(a.processIdentifier)
+  }
+
   public func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
     try keepingFront(keepFront) { try setValueInner(app: app, id: id, value: value) }
   }

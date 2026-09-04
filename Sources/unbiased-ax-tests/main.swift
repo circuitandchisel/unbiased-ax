@@ -9,6 +9,7 @@ runSnapshotTests()
 runFormatterTests()
 runDifferTests()
 runDispatcherTests()
+runDesktopReachTests()
 runServerTests()
 
 finish()
