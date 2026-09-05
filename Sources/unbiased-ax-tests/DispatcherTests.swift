@@ -9,6 +9,12 @@ final class FakeBackend: Backend {
   var lastOptions: SnapshotOptions?
   var offscreen = 0
   var hideWindows = false
+  /// Models a window the window server lists that the scan has not reached:
+  /// `windows` is empty even with cross-Space on.
+  var unreachable = false
+  /// Models the live adapter having proved the remote-token path. With it on,
+  /// a "hidden" window is still listed, flagged as on another Space.
+  var crossSpaceOn = false
   var keys: [(app: String, key: String)] = []
   var registries: [String: IdRegistry] = [:]
   let tree = group("w", [button("w/ok", "OK"),
@@ -16,13 +22,17 @@ final class FakeBackend: Backend {
                    title: "Win")
 
   func isTrusted() -> Bool { trusted }
+  func crossSpace() -> Bool { crossSpaceOn }
   func apps() -> [AppInfo] {
     [AppInfo(pid: 10, name: "Brave Browser", bundleId: "com.brave.Browser", frontmost: true),
      AppInfo(pid: 11, name: "Finder", bundleId: "com.apple.finder", frontmost: false)]
   }
   func windows(app: String) throws -> [WindowInfo] {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
-    return hideWindows ? [] : [WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true)]
+    if unreachable { return [] }
+    if hideWindows && !crossSpaceOn { return [] }
+    let win = WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true, onSpace: !hideWindows)
+    return [win]
   }
   func snapshot(app: String, options: SnapshotOptions) throws -> Snapshot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }

@@ -34,7 +34,7 @@ public final class Dispatcher {
     guard Self.methods.contains(method) else { throw BridgeError.unknownMethod(method) }
     switch method {
     case "hello":
-      return ["name": "unbiased-ax", "protocolVersion": protocolVersion, "trusted": backend.isTrusted()]
+      return ["name": "unbiased-ax", "protocolVersion": protocolVersion, "trusted": backend.isTrusted(), "crossSpace": backend.crossSpace()]
     case "apps":
       return ["apps": backend.apps().map(asDict)]
     default: break
@@ -48,7 +48,7 @@ public final class Dispatcher {
     case "windows":
       let wins = try backend.windows(app: app)
       var out: [String: Any] = ["windows": wins.map(asDict), "text": wins.map(\.line).joined(separator: "\n")]
-      try annotateSpaces(&out, app: app, windowsHere: wins.count)
+      try annotateSpaces(&out, app: app, windowsHere: { wins.count })
       return out
     case "tree":
       let snap = try backend.snapshot(app: app, options: options(p))
@@ -65,7 +65,7 @@ public final class Dispatcher {
       // explanation. A model given eight bare elements concludes the tool is
       // broken and leaves for the shell. `windows` carried this hint from the
       // start; `tree` — the read the model actually calls — never did.
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "find":
       let snap = try backend.snapshot(app: app, options: options(p))
@@ -77,7 +77,7 @@ public final class Dispatcher {
         (needle == nil || (n.attributes.title ?? "").lowercased().contains(needle!) || (n.attributes.value ?? "").lowercased().contains(needle!))
       }
       var out: [String: Any] = ["matches": hits.map { Formatter.line($0, geometry: geometry) }, "count": hits.count]
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "act":
       let id = try int(p, "id"); let action = try string(p, "action")
@@ -116,7 +116,7 @@ public final class Dispatcher {
         "tree": Formatter.render(snap, geometry: false),
         "count": snap.nodes.count,
       ]
-      try annotateSpaces(&out, app: app, windowsHere: try backend.windows(app: app).count)
+      try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "scroll":
       let id = try int(p, "id")
@@ -131,19 +131,33 @@ public final class Dispatcher {
     }
   }
 
-  /// Off-Space windows, and what to do about them. AXWindows only lists the
-  /// current Space, so "no windows" and "windows elsewhere" look identical in
-  /// a tree; this is the only thing that tells them apart. The advice differs
-  /// by whether anything readable is HERE, because that is what decides
-  /// whether raising is necessary or gratuitous: with a window on this Space
-  /// the model raised for no reason and took the user's screen; with none, no
-  /// amount of reading finds the window — a model spent six minutes proving
-  /// that, and another lost the task to a shell.
-  private func annotateSpaces(_ out: inout [String: Any], app: String, windowsHere: Int) throws {
+  /// Off-Space windows, and what to do about them. Without the remote-token
+  /// path AXWindows lists only the current Space, so "no windows" and "windows
+  /// elsewhere" look identical in a tree; the hint is the only thing that tells
+  /// them apart, and its advice differs by whether anything readable is HERE:
+  /// with a window on this Space the model raised for no reason and took the
+  /// user's screen; with none, no amount of reading finds the window — a model
+  /// spent six minutes proving that, and another lost the task to a shell.
+  /// With the remote-token path proved, every window the scan reached is in
+  /// the tree and one hint is left: the window server lists windows and the
+  /// tree has none, so the scan has not reached them yet — read again.
+  /// `windowsHere` is a closure because it is only needed when something is
+  /// off-Space, and computing it is a window scan.
+  private func annotateSpaces(_ out: inout [String: Any], app: String, windowsHere: () throws -> Int) throws {
     let off = try backend.offscreenWindows(app: app)
     out["offscreen"] = off
     guard off > 0 else { return }
-    if windowsHere == 0 {
+    if backend.crossSpace() {
+      // Every window the scan reached is already in the tree, so there is only
+      // one thing left worth saying: the window server lists windows and the
+      // tree has none. The scan has not reached them yet — never shown, or the
+      // first look aborted — and reading again is the answer, not raising.
+      if try windowsHere() == 0 {
+        out["hint"] = "The window server lists \(off) window(s) for this app that could not be read yet. Read again; if it stays empty, the app has no window to work in. Do not raise."
+      }
+      return
+    }
+    if try windowsHere() == 0 {
       out["hint"] = "This app's \(off) window(s) are all on another Space or hidden. They are NOT in the tree and cannot be read or acted on from here: call raise for this app first, then read again."
     } else {
       out["hint"] = "\(off) further window(s) are on another Space or hidden. The window(s) here are readable — work with those; do not raise."

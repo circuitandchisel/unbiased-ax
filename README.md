@@ -31,8 +31,9 @@ from the window title. This is the piece that makes the second path possible.
     → {"id":4,"method":"act","params":{"app":"Brave","id":3,"action":"press"}}
     ← {"id":4,"result":{"ok":true,"diff":"~1 standard window \"Loser - Audio playing - Brave\" {raise}"}}
 
-Four calls. `raise` works across Spaces. Every action returns the diff of what
-it did, so the model never spends a round-trip just to look.
+Four calls. Windows on another Space are read in place; `raise` is only for
+when the user should see the app. Every action returns the diff of what it
+did, so the model never spends a round-trip just to look.
 
 The full protocol is in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
@@ -92,6 +93,14 @@ not the root's children; `AXWindows` lists only the **current Space**, so
 `windows` reports `offscreen` and `raise` waits for the switch; and an element
 reachable by two parents (Chromium's address bar) must appear once.
 
+## Across Spaces
+
+`AXWindows` lists only the current Space. The bridge reaches the rest through
+the private remote-token path — proved on this machine at startup, off if it
+does not round-trip — so an app fullscreen on another Space is read, found and
+acted on without switching to it. `hello` reports `crossSpace`; see
+docs/PROTOCOL.md and docs/plans/2026-09-04-cross-space-design.md.
+
 ## Permission
 
 Every method except `hello` and `apps` needs Accessibility access for the
@@ -113,3 +122,4 @@ does. It costs the browser measurable work per page, so it is opt-in.
     docs/PROTOCOL.md          the wire protocol
     docs/INTEGRATION.md       how unbiased-app consumes this
     docs/plans/               the implementation plan this was built from
+    scripts/probe/            the probes behind the cross-Space design (docs/plans/2026-09-04-cross-space-design.md)
