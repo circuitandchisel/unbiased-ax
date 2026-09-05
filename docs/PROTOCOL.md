@@ -24,8 +24,9 @@ Three rules the model must know:
 ## Spaces
 
 `hello` reports `crossSpace`. When true, windows on another Space are in the
-tree and are read, found and acted on like any other — `key` and `scroll`
-excepted until verified on a window on another Space. `windows` marks them
+tree and are read, found and acted on like any other — `scroll` excepted: it is
+the only verb that uses screen coordinates, and whether an off-Space window
+scrolls its content is unconfirmed. `windows` marks them
 `[other Space]` and `offscreen` counts them. One hint remains in this world:
 when the tree has no window and the window server still lists some, the read
 says they could not be read yet and to read again — never to raise. `offscreen`
@@ -55,7 +56,7 @@ single read.
 | `find` | `app`, `role?` (exact), `title?` (substring, also matches value), plus the `tree` options | `{matches:[lines], count, offscreen, hint?}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces), `keepFront?` (default false) | `{ok, diff}` |
 | `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox |
-| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid — unverified on a window on another Space |
+| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable |

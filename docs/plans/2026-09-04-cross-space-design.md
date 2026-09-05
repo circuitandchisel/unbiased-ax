@@ -74,6 +74,8 @@ Measured:
 | Notes (Cocoa), off-Space, walked | 156 elements in 54 ms |
 | element rebuilt from a from-scratch token vs the public `AXWindows` element | `CFEqual` true, `CFHash` equal, same window id |
 | set `AXFocused=true` on Brave's address bar, off-Space | `AXError 0` in 3 ms; read-back true; frontmost app, on-screen windows and Brave's on-screen state all unchanged |
+| `key escape` to a Maps window on another Space | delivered; frontmost and on-screen state unchanged |
+| `act press` on an off-Space Maps search result | place card opened; no screen change |
 
 The identity result is what makes this safe for the rest of the bridge: the
 element reached by scan *is* the element `AXWindows` returns when the window is
@@ -198,12 +200,19 @@ by hand and by a runtime self-check.
 - **Private API.** The token layout and the three symbols are observed, not
   contractual. Mitigated by the self-check and fallback; a macOS update that
   breaks the trick degrades to today, silently.
-- **`scroll` off-Space is unverified.** It is the one verb that uses screen
-  coordinates: it posts a `mouseMoved` at the element's midpoint before the
-  wheel event. An off-Space window's coordinates are in that Space's frame.
-  The plan must verify it on a real off-Space window before the verb is
-  declared cross-Space-safe; `key` (pid-posted, no coordinates) is expected to
-  work and should be verified the same way.
+- **`scroll` off-Space is the one verb left to distrust.** `key` and
+  `act press` are now verified there: `key escape` reached a Maps window on
+  another Space, and `act press` on an off-Space search result opened its place
+  card — both with the frontmost app unchanged and nothing coming on screen.
+  (`press` is worth stating because it was briefly suspected of needing a
+  synthesized double-click; it does not.) `scroll` is the one verb that uses
+  screen coordinates: it posts a `mouseMoved` at the element's midpoint before
+  the wheel event, and an off-Space window's coordinates are in that Space's
+  frame. Measured, it returns `ok` and takes no screen — but on the pages tested
+  (a Maps place card with no scroll area, and a Brave video page whose tree does
+  not change when scrolled) no positive evidence was obtained that the content
+  actually scrolled. So: it reaches the app without taking the screen; whether
+  an off-Space window scrolls its content is still unconfirmed.
 - **Chromium for non-visible windows.** Measured fine today (the web area was
   fully populated off-Space), but Chromium's renderer throttling is not under
   our control.
