@@ -103,8 +103,8 @@ a cache:
 - Remember wids that mapped to nothing until they disappear — but only once at
   least one real window is mapped, so a fresh launch keeps looking until its
   window is vended. The system strips then cost one scan per app.
-- Element ids grow monotonically within a process, so a rescan for a window
-  opened later can start from the highest id seen.
+- Ids are not resumed from the highest seen: that could not skip the strips'
+  to-cap scan and would be unsafe if an app recycled ids.
 
 **Two plug-in points.** `LiveSource.children(of: appRoot)` already unions
 `AXChildren` with `AXWindows`; it gains the map's elements as a third source,
@@ -117,15 +117,18 @@ filter. Fullscreen toolbar panes and system strips are excluded from both the
 `windows` listing and the tree roots; the address bar was found inside the
 standard window on a real fullscreen Brave.
 
-**Self-check, then fallback.** At `LiveBackend` init, `dlsym` the three
-symbols. Then prove the mechanism on this machine: scan any regular app that
-has windows in `CGWindowList` and require at least one `AXWindow` element whose
-`_AXUIElementGetWindow` is a wid that list contains. When an app with a public
-`AXWindows` window is available, additionally require the token round-trip to
-be `CFEqual`. Any failure — a missing symbol, a scan that maps nothing, an
-identity mismatch — sets `crossSpace = false` and the bridge behaves exactly as
-it does today. `hello` reports the flag. The rule: never act on a private API
-that has stopped round-tripping on this machine.
+**Self-check, then fallback.** The verdict is lazy: decided on the first
+trusted call (`hello`, in practice), not at `LiveBackend` init, because the app
+spawns the bridge before the user may have granted Accessibility. `dlsym` the
+three symbols, then prove the mechanism on this machine: an app with a public
+`AXWindows` window that has a window id is a witness — the token round-trip
+must be `CFEqual` and a scan must then map at least one real window; without
+one, any regular app whose scan maps a real window is accepted. Three
+outcomes: true; nil — undecided (not trusted, or nothing to witness with),
+asked again at most every 30 s; and a definitive false only for missing symbols
+or no witness round-tripping, which leaves the bridge behaving exactly as it
+does today. `hello` reports the flag. The rule: never act on a private API that
+has stopped round-tripping on this machine.
 
 `AXModel` stays pure. Nothing in this section touches it.
 
@@ -201,7 +204,8 @@ by hand and by a runtime self-check.
   our control.
 - **Scan cost for late windows.** A window opened after a long Chromium
   session has a high element id. The cap bounds the cost to about a second,
-  once, and the monotonic-id optimisation makes the common case cheap.
+  once per app that has a real window, and once per second for one that does
+  not.
 - **A second window first vended after the map settled** stays unmapped until
   the next scan for any reason (a new wid, or the empty-map retry): the wake
   reads only the main and focused windows. Not seen on the measured apps

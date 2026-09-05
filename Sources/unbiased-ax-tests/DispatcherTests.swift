@@ -9,6 +9,9 @@ final class FakeBackend: Backend {
   var lastOptions: SnapshotOptions?
   var offscreen = 0
   var hideWindows = false
+  /// Models a window the window server lists that the scan has not reached:
+  /// `windows` is empty even with cross-Space on.
+  var unreachable = false
   /// Models the live adapter having proved the remote-token path. With it on,
   /// a "hidden" window is still listed, flagged as on another Space.
   var crossSpaceOn = false
@@ -26,6 +29,7 @@ final class FakeBackend: Backend {
   }
   func windows(app: String) throws -> [WindowInfo] {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
+    if unreachable { return [] }
     if hideWindows && !crossSpaceOn { return [] }
     let win = WindowInfo(id: 1, title: "YouTube - Brave", x: 0, y: 0, width: 1200, height: 800, minimized: false, focused: true, onSpace: !hideWindows)
     return [win]

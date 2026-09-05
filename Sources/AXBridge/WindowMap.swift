@@ -59,6 +59,18 @@ struct WindowMap {
     return out
   }
 
+  /// Windows the window server lists that are not the system's per-app strips
+  /// (full-width, 30px). Used only when the map is empty, to tell "no window"
+  /// from "a window the scan has not reached yet".
+  static func unreachableCandidates(pid: pid_t) -> Int {
+    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+    return list.filter {
+      ($0[kCGWindowOwnerPID as String] as? Int32) == pid
+        && (($0[kCGWindowLayer as String] as? Int) ?? 1) == 0
+        && ((($0[kCGWindowBounds as String] as? [String: Any])?["Height"] as? Double) ?? 0) > 32
+    }.count
+  }
+
   /// Bring the map up to date with the window server. Free when nothing
   /// changed; one scan when a wid appeared that is not settled yet.
   ///
@@ -66,8 +78,10 @@ struct WindowMap {
   /// does not miss: it answers -25204 (cannotComplete) after the messaging
   /// timeout on EVERY id, so that code aborts the scan at once — 65,536 of
   /// them would be a hang measured in hours. The wall-clock budget is the
-  /// second net, for a hang that starts mid-scan or inside windowId(of:).
-  mutating func refresh(pid: pid_t) {
+  /// second net, for a hang that starts mid-scan or inside windowId(of:). A
+  /// caller's `deadline` caps the wake and the scan as well — the self-check's
+  /// clock, which one slow app must not stretch by a wake and a full scan.
+  mutating func refresh(pid: pid_t, deadline: Date? = nil) {
     guard Date().timeIntervalSince(lastRefresh) >= Self.refreshTTL else { return }
     lastRefresh = Date()
     let live = Self.serverWindows(pid: pid)
@@ -83,13 +97,15 @@ struct WindowMap {
     // element until AXMainWindow was read; AXWindows lists nothing off-screen
     // and vends nothing). Two reads on the root vend what a fresh app has, so
     // the scan below can find it.
-    Self.wake(pid: pid)
+    let outOfTime = deadline.map { Date() > $0 } ?? false
+    if !outOfTime { Self.wake(pid: pid) }
     let started = Date()
+    let until = min(started.addingTimeInterval(Self.scanBudget), deadline ?? .distantFuture)
     var id: UInt32 = 0
     var aborted = false
     while id < Self.scanCap, !missing.isEmpty {
       defer { id += 1 }
-      if Date().timeIntervalSince(started) > Self.scanBudget { aborted = true; break }
+      if Date() > until { aborted = true; break }
       guard let el = RemoteToken.element(pid: pid, elementId: id) else { aborted = true; break } // nothing was checked; settle nothing
       let (err, role) = Self.attr(el, kAXRoleAttribute)
       if err == .cannotComplete { aborted = true; break }
@@ -172,13 +188,13 @@ struct WindowMap {
       }
       anyRoundTripped = true
       var map = WindowMap()
-      map.refresh(pid: pid)
+      map.refresh(pid: pid, deadline: deadline)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(name)"); return true }
     }
     for a in without {
       if Date() > deadline { break }
       var map = WindowMap()
-      map.refresh(pid: a.processIdentifier)
+      map.refresh(pid: a.processIdentifier, deadline: deadline)
       if !map.byWid.isEmpty { debugLog("cross-Space self-check: ok via \(a.localizedName ?? "?") (no public window to compare)"); return true }
     }
     if roundTripFailed && !anyRoundTripped { debugLog("cross-Space self-check: no witness round-tripped; off"); return false }

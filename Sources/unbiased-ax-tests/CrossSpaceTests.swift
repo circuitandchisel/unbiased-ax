@@ -48,4 +48,16 @@ func runCrossSpaceTests() {
     let out = call(Dispatcher(backend: b), #"{"id":5,"method":"tree","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains("call raise for this app first"), out)
   }
+
+  test("across Spaces, a window the scan could not reach yet is reported as that — read again, never raise") {
+    // A fresh launch before its window is vended, or a first scan that aborted:
+    // the window server lists a window and the tree has none. Saying "no
+    // windows" here is the eight-bare-elements failure all over again.
+    let b = FakeBackend(); b.crossSpaceOn = true; b.unreachable = true; b.offscreen = 1
+    let out = call(Dispatcher(backend: b), #"{"id":7,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""offscreen":1"#), out)
+    try expect(out.contains("could not be read yet"), "must say the window exists and is not reachable yet: \(out)")
+    try expect(out.contains("Read again"), out)
+    try expect(!out.contains("call raise"), "must never send the model to raise across Spaces: \(out)")
+  }
 }

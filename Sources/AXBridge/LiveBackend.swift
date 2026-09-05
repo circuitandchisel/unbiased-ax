@@ -111,7 +111,12 @@ public final class LiveBackend: Backend {
     let a = try resolve(app)
     if crossSpace() {
       // annotation, not the read: an AXWindows timeout here must not sink a tree that already came back
-      return offSpaceWindows(a, here: (try? publicWindows(a)) ?? []).count
+      let here = (try? publicWindows(a)) ?? []
+      let mapped = offSpaceWindows(a, here: here)
+      // Nothing readable and nothing mapped: the app may have no window, or one
+      // the scan has not reached (never vended, or the first look aborted).
+      // Count what the window server lists so the caller can say "read again".
+      return here.isEmpty && mapped.isEmpty ? WindowMap.unreachableCandidates(pid: a.processIdentifier) : mapped.count
     }
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
     return list.filter {
@@ -163,7 +168,7 @@ public final class LiveBackend: Backend {
       FileHandle.standardError.write("[ax] root: role=\(at.role) title=\(at.title ?? "-") size=\(at.width)x\(at.height) geometryKnown=\(at.geometryKnown) children=\(LiveSource(appRoot: root).children(of: root).count)\n".data(using: .utf8)!)
     }
     var reg = registries[a.processIdentifier] ?? IdRegistry()
-    let extra = offSpaceWindows(a, here: (try? publicWindows(a)) ?? [])
+    let extra = crossSpace() ? offSpaceWindows(a, here: (try? publicWindows(a)) ?? []) : []
     let snap = Snapshot.build(root: root, source: LiveSource(appRoot: root, extraWindows: extra), registry: &reg, options: options)
     registries[a.processIdentifier] = reg
     var map: [Int: AXElement] = [:]
