@@ -306,22 +306,32 @@ public final class LiveBackend: Backend {
     return (try? resolve(app)) != nil
   }
 
-  /// Why a press did nothing, when the bridge can tell. Measured over three
-  /// days on Maps: a window whose SURFACE the window server has shrunk to a
-  /// thumbnail (108x97 while the Accessibility API still reports 1024x768)
-  /// stops hit-testing its SwiftUI-hosted controls — list rows, card buttons,
-  /// mode tabs accept AXPress and do nothing — while its AppKit controls
-  /// (Close, the menu bar) and posted key events keep working. A picture of
-  /// that window is blank for the same reason: there is nothing drawn at that
-  /// size. Raising the app restores the full surface, and it stays restored.
+  /// Why a press did nothing, when the bridge can tell. Measured end to end
+  /// on 2026-09-05: with Stage Manager on, the moment another app is active
+  /// macOS parks a background app's window into the side strip as a thumbnail
+  /// — 108x104 while the Accessibility API still reports 1024x768. At that
+  /// size the app stops hit-testing its SwiftUI-hosted controls, so list rows,
+  /// card buttons and mode tabs accept AXPress and do nothing, and a picture
+  /// of the window is blank. Posted keys and menu bar items are unaffected,
+  /// because neither goes through the window's hit-testing.
   ///
-  /// Both directions were measured: shrunk means dead, full size means alive,
-  /// on the same window minutes apart. What SHRINKS a window mid-session is
-  /// not yet identified — a fresh background launch is usually full size — so
-  /// this reports the state rather than claiming a cause.
+  /// Raising is deliberately NOT offered: it un-parks the window only while
+  /// the app is in front, re-parks it the moment focus moves on, and takes
+  /// the user's screen to do it — the exact thing this bridge exists to avoid.
   public func unresponsiveHint(app: String) -> String? {
     guard let a = try? resolve(app), let shrunk = Self.shrunkSurface(a) else { return nil }
-    return "The window server has shrunk \(a.localizedName ?? app)'s window to \(shrunk.actual.w)x\(shrunk.actual.h) while the tree still describes it at \(shrunk.expected.w)x\(shrunk.expected.h). At that size the app stops hit-testing its list rows, card buttons and tabs, so presses on them are accepted and do nothing, and a picture of the window is blank. What still works from the background: the keyboard (from a search field, down/up choose a result and return opens it) and the menu bar items in this tree. Raising the app also fixes it for the rest of the session, but takes the user's screen."
+    let name = a.localizedName ?? app
+    let sizes = "\(shrunk.actual.w)x\(shrunk.actual.h), though the tree describes it at \(shrunk.expected.w)x\(shrunk.expected.h)"
+    guard Self.stageManagerOn() else {
+      return "\(name)'s window is only \(sizes). At that size the app stops hit-testing its list rows, card buttons and tabs, so presses on them do nothing. Use the keyboard instead: from a search field, down and up move through results and return opens one. Menu bar items in this tree also work."
+    }
+    return "Stage Manager has parked \(name)'s window in the side strip as a thumbnail: \(sizes). Every app the user is not looking at is parked this way, and a thumbnail cannot be clicked, so presses on rows, card buttons and tabs are accepted and do nothing, and a picture of the window is blank. Two things still work and are enough to finish the task: the keyboard (from a search field, down and up move through the results and return opens one; escape closes) and the menu bar items in this tree. Do not raise the app — the window re-parks as soon as focus moves on, and raising takes over the user's screen. If this keeps getting in the way, the user can turn Stage Manager off in System Settings > Desktop & Dock."
+  }
+
+  /// Whether Stage Manager is on. It parks every inactive app's windows into
+  /// the side strip as thumbnails, which is what makes them unclickable.
+  static func stageManagerOn() -> Bool {
+    (CFPreferencesCopyAppValue("GloballyEnabled" as CFString, "com.apple.WindowManager" as CFString) as? Bool) ?? false
   }
 
   /// The window's Accessibility size against the surface the window server

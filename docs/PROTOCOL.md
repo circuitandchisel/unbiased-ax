@@ -47,7 +47,7 @@ a long-lived bridge; call `hello` again to see it. Deciding it is budgeted at
 five seconds, paid by the first trusted call; one slow app can stretch it by a
 single read.
 
-A window whose surface the window server has shrunk to a thumbnail (measured on Maps: 108x97 while the Accessibility API reported 1024x768) stops hit-testing its SwiftUI-hosted controls — list rows, card buttons, mode tabs accept `press` and do nothing — while AppKit controls (Close, the menu bar) and posted keys work, and a picture of it is blank. An action that changes nothing in that state carries a `hint` saying so and naming the paths that work. Raising the app restores the surface for the rest of the session.
+With Stage Manager on, macOS parks every inactive app's window into the side strip as a thumbnail (measured: 108x104 while the Accessibility API reports 1024x768). A thumbnail does not hit-test, so `press` on list rows, card buttons and tabs is accepted and does nothing, and `screenshot` of that window is blank. Posted keys and menu bar items are unaffected. An action that changes nothing in that state carries a `hint` saying so and naming the paths that work; it does not suggest raising, because the window re-parks as soon as focus moves on.
 
 `screenshot` photographs a window on another Space as well (measured: Maps' UI came back in 72ms with Brave still frontmost). What the app does not draw while hidden is black in the picture; controls and text are not.
 
