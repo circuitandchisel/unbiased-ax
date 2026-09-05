@@ -350,6 +350,24 @@ public final class LiveBackend: Backend {
     guard err == .success else { throw BridgeError.actionFailed("setValue failed (AXError \(err.rawValue)); the element may be read-only") }
   }
 
+  public func screenshot(app: String, windowId: Int?) throws -> WindowShot {
+    let a = try resolve(app)
+    let wins = try windows(app: app)
+    guard !wins.isEmpty else { throw BridgeError.actionFailed("\(a.localizedName ?? app) has no window to photograph") }
+    let target: WindowInfo
+    if let id = windowId {
+      guard let w = wins.first(where: { $0.id == id }) else { throw BridgeError.noSuchWindow(id) }
+      target = w
+    } else {
+      target = wins.first(where: \.focused) ?? wins.first(where: \.onSpace) ?? wins[0]
+    }
+    guard let el = elements[a.processIdentifier]?[target.id], let cg = RemoteToken.windowId(of: el.ref) else {
+      throw BridgeError.actionFailed("could not map window \(target.id) to the window server")
+    }
+    guard #available(macOS 14, *) else { throw BridgeError.actionFailed("window capture needs macOS 14 or later") }
+    return try WindowCapture.capture(cgWindow: cg, info: target)
+  }
+
   public func raise(app: String, windowId: Int?) throws {
     let a = try resolve(app)
     // Activate the app first: AXRaise on a background app's window is only

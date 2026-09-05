@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
 
   private let backend: Backend
@@ -117,6 +117,14 @@ public final class Dispatcher {
         "count": snap.nodes.count,
       ]
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
+      return out
+    case "screenshot":
+      let shot = try backend.screenshot(app: app, windowId: p["window"] as? Int)
+      var out: [String: Any] = ["png": shot.png.base64EncodedString(), "width": shot.width, "height": shot.height,
+                                "window": shot.windowId, "onSpace": shot.onSpace]
+      if !shot.onSpace {
+        out["note"] = "This window is on another Space. The picture is what the app has drawn while hidden: controls and text are there, but content it renders only when visible (map tiles, video, some web views) may be blank."
+      }
       return out
     case "scroll":
       let id = try int(p, "id")

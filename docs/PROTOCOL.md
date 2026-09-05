@@ -47,6 +47,8 @@ a long-lived bridge; call `hello` again to see it. Deciding it is budgeted at
 five seconds, paid by the first trusted call; one slow app can stretch it by a
 single read.
 
+`screenshot` photographs a window on another Space as well (measured: Maps' UI came back in 72ms with Brave still frontmost). What the app does not draw while hidden is black in the picture; controls and text are not.
+
 ## Methods
 
 | method | params | result |
@@ -60,6 +62,7 @@ single read.
 | `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox |
 | `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
+| `screenshot` | `app`, `window?` (id from `windows`; default the focused window) | `{png, width, height, window, onSpace, note?}` — PNG (base64) of that one window, taken through ScreenCaptureKit wherever the window is, without raising anything; 1x; needs Screen Recording. Off-Space windows carry `note`: what the app only draws while visible (map tiles, video) may be blank |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable |
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |

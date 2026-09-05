@@ -30,7 +30,22 @@ public enum Role {
   }
 
   /// "AXPress" -> "press", "AXShowMenu" -> "show menu".
-  public static func normalizeAction(_ ax: String) -> String { words(ax) }
+  ///
+  /// A Catalyst app's custom actions arrive as the DESCRIPTION of the
+  /// UIAccessibilityCustomAction object, three lines of it:
+  /// "name: move down\n target:0x0\n selector:(null)". Measured on Maps'
+  /// directions fields. The tree is one element per line, so a newline in an
+  /// action name breaks every reader of it; keep the name and drop the rest.
+  public static func normalizeAction(_ ax: String) -> String {
+    if ax.contains("\n") {
+      for line in ax.split(separator: "\n") {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("name:") { return t.dropFirst(5).trimmingCharacters(in: .whitespaces) }
+      }
+      return ax.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ax
+    }
+    return words(ax)
+  }
 
   private static func words(_ ax: String) -> String {
     let s = ax.hasPrefix("AX") ? String(ax.dropFirst(2)) : ax

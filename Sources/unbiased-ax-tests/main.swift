@@ -12,6 +12,7 @@ runDispatcherTests()
 runDesktopReachTests()
 runCrossSpaceTests()
 runSettleTests()
+runScreenshotTests()
 runServerTests()
 
 finish()

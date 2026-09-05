@@ -111,4 +111,21 @@ public protocol Backend: AnyObject {
   func pressKey(app: String, key: String, focusId: Int?) throws
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   func raise(app: String, windowId: Int?) throws
+  /// A picture of one window, PNG, wherever the window is — another Space
+  /// included — without raising anything. Measured 2026-09-05: Maps' window
+  /// on another Space came back in 72ms as a real image of its UI; content the
+  /// app only draws while visible (the map tiles) was black. `windowId` nil
+  /// means the focused window, else the first. Needs Screen Recording.
+  func screenshot(app: String, windowId: Int?) throws -> WindowShot
+}
+
+public struct WindowShot {
+  public var png: Data
+  public var width: Int
+  public var height: Int
+  public var windowId: Int
+  public var onSpace: Bool
+  public init(png: Data, width: Int, height: Int, windowId: Int, onSpace: Bool) {
+    self.png = png; self.width = width; self.height = height; self.windowId = windowId; self.onSpace = onSpace
+  }
 }

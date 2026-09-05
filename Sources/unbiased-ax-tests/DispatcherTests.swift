@@ -78,6 +78,12 @@ final class FakeBackend: Backend {
     launched.append(app)
     return launchSucceeds
   }
+  var shotRequests: [(app: String, windowId: Int?)] = []
+  func screenshot(app: String, windowId: Int?) throws -> WindowShot {
+    guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
+    shotRequests.append((app, windowId))
+    return WindowShot(png: Data([0x89, 0x50, 0x4E, 0x47]), width: 1200, height: 800, windowId: windowId ?? 1, onSpace: !hideWindows)
+  }
   /// Snapshots before the tree changes. Models an app that renders its
   /// response a beat after the action returns — which is every real app.
   var snapshotsUntilChange = 0
@@ -396,5 +402,36 @@ func runSettleTests() {
     let elapsed = Date().timeIntervalSince(started)
     try expect(out.contains("removed"), out)
     try expect(elapsed >= 3.3 && elapsed < 4.5, "the shrunk-tree bound is 3.5s (took \(elapsed)s)")
+  }
+}
+
+func runScreenshotTests() {
+  print("Photographing a window")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  test("screenshot returns the PNG, its size, and which window it is") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""png":"iVBORw==""#), out)
+    try expect(out.contains(#""width":1200"#) && out.contains(#""onSpace":true"#), out)
+    try expect(!out.contains("note"), "a window on this Space needs no caveat: \(out)")
+    try expectEqual(b.shotRequests.count, 1)
+  }
+
+  test("a window on another Space carries the hidden-content caveat, and the window id is passed through") {
+    let b = FakeBackend()
+    b.crossSpaceOn = true
+    b.hideWindows = true
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Brave Browser","window":7}}"#)
+    try expect(out.contains(#""onSpace":false"#) && out.contains("another Space"), out)
+    try expectEqual(b.shotRequests.first?.windowId, 7)
+  }
+
+  test("screenshot of an unknown app is the usual no_such_app") {
+    let d = Dispatcher(backend: FakeBackend())
+    let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Nope"}}"#)
+    try expect(out.contains("no_such_app"), out)
   }
 }

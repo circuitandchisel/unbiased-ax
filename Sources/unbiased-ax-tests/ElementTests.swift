@@ -2,6 +2,12 @@ import AXModel
 
 func runElementTests() {
   print("Element")
+
+  test("a Catalyst custom action's three-line description is reduced to its name") {
+    try expectEqual(Role.normalizeAction("name: move down\n target:0x0\n selector:(null)"), "move down")
+    try expectEqual(Role.normalizeAction("AXShowMenu"), "show menu")
+    try expectEqual(Role.normalizeAction("first line\nsecond"), "first line")
+  }
   test("AX role names are shortened to what a person would say") {
     try expectEqual(Role.normalize("AXButton"), "button")
     try expectEqual(Role.normalize("AXPopUpButton"), "pop up button")
