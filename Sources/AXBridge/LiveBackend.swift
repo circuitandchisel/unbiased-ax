@@ -270,7 +270,6 @@ public final class LiveBackend: Backend {
     // and no reason to touch focus.
     let alreadyHere = ((try? windows(app: app)) ?? []).isEmpty == false
     if alreadyHere { return true } // a readable window exists; do not touch focus
-    let wasRunning = (try? resolve(app)) != nil
 
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -297,7 +296,6 @@ public final class LiveBackend: Backend {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       if let a = try? resolve(app), let wins = try? windows(app: String(a.processIdentifier)), !wins.isEmpty {
-        if !wasRunning && crossSpace() { showOnce(a) }
         return true
       }
       Thread.sleep(forTimeInterval: 0.2)
@@ -308,30 +306,50 @@ public final class LiveBackend: Backend {
     return (try? resolve(app)) != nil
   }
 
-  /// Bring a freshly launched app to the front for about a second, then put
-  /// the user's app back. Measured on Maps across three runs and a dozen
-  /// probes: a Catalyst app launched in the background (`open -g`) accepts
-  /// AXPress on its SwiftUI-hosted controls — search-result rows, the place
-  /// card's directions button, the travel-mode tabs — and does nothing, while
-  /// its UIKit and AppKit controls (Close, the menu bar) and posted keys work.
-  /// Once its window has been on screen once, the same presses work off-Space
-  /// for the rest of the process's life. A window capture of the never-shown
-  /// window is blank for the same reason: nothing was ever drawn.
+  /// Why a press did nothing, when the bridge can tell. Measured over three
+  /// days on Maps: a window whose SURFACE the window server has shrunk to a
+  /// thumbnail (108x97 while the Accessibility API still reports 1024x768)
+  /// stops hit-testing its SwiftUI-hosted controls — list rows, card buttons,
+  /// mode tabs accept AXPress and do nothing — while its AppKit controls
+  /// (Close, the menu bar) and posted key events keep working. A picture of
+  /// that window is blank for the same reason: there is nothing drawn at that
+  /// size. Raising the app restores the full surface, and it stays restored.
   ///
-  /// So a cold launch costs one Space switch there and back. That is the
-  /// price of every later press landing; the alternative was the model
-  /// retrying one dead button by four means and raising the app anyway.
-  private func showOnce(_ a: NSRunningApplication) {
-    let before = NSWorkspace.shared.frontmostApplication
-    a.activate(options: [])
-    // Wait for the switch to land — a window becomes listable on this Space —
-    // then give the app one moment on screen to draw.
-    let deadline = Date().addingTimeInterval(2.0)
-    while Date() < deadline, ((try? publicWindows(a)) ?? []).isEmpty { usleep(50_000) }
-    Thread.sleep(forTimeInterval: Self.showOnceDwell)
-    if let before, before.processIdentifier != a.processIdentifier { before.activate(options: []) }
+  /// Both directions were measured: shrunk means dead, full size means alive,
+  /// on the same window minutes apart. What SHRINKS a window mid-session is
+  /// not yet identified — a fresh background launch is usually full size — so
+  /// this reports the state rather than claiming a cause.
+  public func unresponsiveHint(app: String) -> String? {
+    guard let a = try? resolve(app), let shrunk = Self.shrunkSurface(a) else { return nil }
+    return "The window server has shrunk \(a.localizedName ?? app)'s window to \(shrunk.actual.w)x\(shrunk.actual.h) while the tree still describes it at \(shrunk.expected.w)x\(shrunk.expected.h). At that size the app stops hit-testing its list rows, card buttons and tabs, so presses on them are accepted and do nothing, and a picture of the window is blank. What still works from the background: the keyboard (from a search field, down/up choose a result and return opens it) and the menu bar items in this tree. Raising the app also fixes it for the rest of the session, but takes the user's screen."
   }
-  static let showOnceDwell: TimeInterval = 1.0
+
+  /// The window's Accessibility size against the surface the window server
+  /// reports, when the latter is dramatically smaller. Nil when they agree.
+  static func shrunkSurface(_ a: NSRunningApplication) -> (expected: (w: Int, h: Int), actual: (w: Int, h: Int))? {
+    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+    let root = AXUIElementCreateApplication(a.processIdentifier)
+    AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v) == .success else { return nil }
+    for el in axElements(v) {
+      var sv: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success else { continue }
+      var size = CGSize.zero
+      guard AXValueGetValue(sv as! AXValue, .cgSize, &size), size.width > 200, size.height > 200 else { continue }
+      guard let wid = RemoteToken.windowId(of: el) else { continue }
+      for w in list where CGWindowID((w[kCGWindowNumber as String] as? Int) ?? 0) == wid {
+        guard let b = w[kCGWindowBounds as String] as? [String: Any],
+              let aw = b["Width"] as? Double, let ah = b["Height"] as? Double else { continue }
+        // Half the expected area in both directions is not a resize, it is a
+        // thumbnail: the measured case was 108x97 against 1024x768.
+        if aw < size.width / 2 && ah < size.height / 2 {
+          return ((Int(size.width), Int(size.height)), (Int(aw), Int(ah)))
+        }
+      }
+    }
+    return nil
+  }
 
   /// The Accessibility API has no scroll verb — kAXScrollToVisibleAction moves
   /// to a known element, which is no help for "show me more of this list". So

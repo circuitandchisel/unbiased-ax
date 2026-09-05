@@ -66,10 +66,30 @@ public enum WindowCapture {
           let width = json["width"] as? Int, let height = json["height"] as? Int else {
       throw BridgeError.actionFailed("the capture helper returned an incomplete result")
     }
-    return WindowShot(image: image, mime: "image/jpeg", width: width, height: height, windowId: info.id, onSpace: info.onSpace)
+    let blank = (json["blank"] as? Bool) ?? false
+    LiveSource.trace("capture wid \(cgWindow) via \(proc.executableURL?.lastPathComponent ?? "?"): \(width)x\(height), \(image.count)B, blank=\(blank)")
+    return WindowShot(image: image, mime: "image/jpeg", width: width, height: height, windowId: info.id, onSpace: info.onSpace, blank: blank)
   }
 
   // MARK: helper side
+
+  /// One colour everywhere we look. Sampled on a grid, since a 1024x768 image
+  /// is too many pixels to walk for a diagnostic. A blank picture means the
+  /// window has never been drawn, or Screen Recording was not granted to the
+  /// process macOS attributes the capture to — the two are told apart by the
+  /// caller's context, but neither is a picture worth handing to the model.
+  static func isBlank(_ rep: NSBitmapImageRep) -> Bool {
+    var seen: UInt32?
+    for y in stride(from: 0, to: rep.pixelsHigh, by: max(1, rep.pixelsHigh / 24)) {
+      for x in stride(from: 0, to: rep.pixelsWide, by: max(1, rep.pixelsWide / 32)) {
+        guard let c = rep.colorAt(x: x, y: y) else { continue }
+        let v = UInt32(c.redComponent * 255) << 16 | UInt32(c.greenComponent * 255) << 8 | UInt32(c.blueComponent * 255)
+        if let s = seen, s != v { return false }
+        seen = v
+      }
+    }
+    return true
+  }
 
   /// True when this process was started as the capture helper; `helperMain`
   /// then does the one capture and exits.
@@ -100,10 +120,11 @@ public enum WindowCapture {
         cfg.height = max(1, Int(w.frame.height))
         cfg.showsCursor = false
         let img = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
-        guard let jpeg = NSBitmapImageRep(cgImage: img).representation(using: .jpeg, properties: [.compressionFactor: jpegQuality]) else {
+        let rep = NSBitmapImageRep(cgImage: img)
+        guard let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: jpegQuality]) else {
           result = ["error": "could not encode the capture"]; done.signal(); return
         }
-        result = ["image": jpeg.base64EncodedString(), "width": img.width, "height": img.height]
+        result = ["image": jpeg.base64EncodedString(), "width": img.width, "height": img.height, "blank": isBlank(rep)]
       } catch {
         let ns = error as NSError
         // SCStreamErrorDomain -3801 is the user having declined Screen Recording.

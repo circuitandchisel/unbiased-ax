@@ -81,10 +81,13 @@ final class FakeBackend: Backend {
     return launchSucceeds
   }
   var shotRequests: [(app: String, windowId: Int?)] = []
+  var unresponsiveWhy: String? = nil
+  func unresponsiveHint(app: String) -> String? { unresponsiveWhy }
+  var blankShot = false
   func screenshot(app: String, windowId: Int?) throws -> WindowShot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     shotRequests.append((app, windowId))
-    return WindowShot(image: Data([0xFF, 0xD8, 0xFF]), mime: "image/jpeg", width: 1200, height: 800, windowId: windowId ?? 1, onSpace: !hideWindows)
+    return WindowShot(image: Data([0xFF, 0xD8, 0xFF]), mime: "image/jpeg", width: 1200, height: 800, windowId: windowId ?? 1, onSpace: !hideWindows, blank: blankShot)
   }
   /// Snapshots before the tree changes. Models an app that renders its
   /// response a beat after the action returns — which is every real app.
@@ -461,6 +464,14 @@ func runScreenshotTests() {
     try expectEqual(b.shotRequests.first?.windowId, 7)
   }
 
+  test("a blank picture says so instead of pretending to be a picture") {
+    let b = FakeBackend()
+    b.blankShot = true
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""blank":true"#) && out.contains("BLANK"), out)
+  }
+
   test("screenshot of an unknown app is the usual no_such_app") {
     let d = Dispatcher(backend: FakeBackend())
     let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Nope"}}"#)
@@ -468,30 +479,31 @@ func runScreenshotTests() {
   }
 }
 
-func runLaunchShowTests() {
-  print("A cold launch shows the app once")
+func runUnresponsiveHintTests() {
+  print("Saying why a press did nothing")
   func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
 
-  test("with cross-Space on, launching an app that was not running says it was shown") {
+  test("an action that changed nothing carries the backend's explanation, when it has one") {
     let b = FakeBackend()
-    b.crossSpaceOn = true
-    b.braveRunning = false
+    b.unresponsiveWhy = "Brave is behind a fullscreen Space"
     let d = Dispatcher(backend: b)
-    let out = call(d, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
-    try expect(out.contains(#""shown":true"#) && out.contains("shown for about a second"), out)
-    try expect(out.contains(#""alreadyRunning":false"#), out)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    try expect(out.contains("(no changes)") && out.contains("fullscreen Space"), out)
   }
 
-  test("an app already running is not shown, and neither is anything without cross-Space") {
-    let running = FakeBackend()
-    running.crossSpaceOn = true
-    let d1 = Dispatcher(backend: running)
-    let a = call(d1, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
-    try expect(!a.contains("shown"), a)
-    let blind = FakeBackend()
-    blind.braveRunning = false
-    let d2 = Dispatcher(backend: blind)
-    let b = call(d2, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
-    try expect(!b.contains("shown"), "without cross-Space the launch is already in the foreground: \(b)")
+  test("an action that changed something, or an app the backend cannot explain, gets no hint") {
+    let quiet = FakeBackend()
+    let d1 = Dispatcher(backend: quiet)
+    _ = call(d1, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let a = call(d1, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    try expect(!a.contains("hint"), a)
+    let changed = FakeBackend()
+    changed.unresponsiveWhy = "would be wrong here"
+    changed.snapshotsUntilChange = 1
+    let d2 = Dispatcher(backend: changed)
+    _ = call(d2, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let b = call(d2, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    try expect(!b.contains("hint"), "the app reacted, so nothing needs explaining: \(b)")
   }
 }

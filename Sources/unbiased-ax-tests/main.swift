@@ -14,7 +14,7 @@ runCrossSpaceTests()
 runSettleTests()
 runScreenshotTests()
 runRefusedActionTests()
-runLaunchShowTests()
+runUnresponsiveHintTests()
 runServerTests()
 
 finish()

@@ -118,18 +118,14 @@ public final class Dispatcher {
         "count": snap.nodes.count,
       ]
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
-      if !alreadyRunning && backend.crossSpace() {
-        // See LiveBackend.showOnce: a Catalyst app never drawn ignores presses
-        // on some of its controls, so a cold launch shows it once.
-        out["shown"] = true
-        out["hint"] = ((out["hint"] as? String).map { $0 + " " } ?? "") + "The app was shown for about a second and the user's app put back, so its controls answer presses from the background."
-      }
       return out
     case "screenshot":
       let shot = try backend.screenshot(app: app, windowId: p["window"] as? Int)
       var out: [String: Any] = ["image": shot.image.base64EncodedString(), "mime": shot.mime, "width": shot.width, "height": shot.height,
-                                "window": shot.windowId, "onSpace": shot.onSpace]
-      if !shot.onSpace {
+                                "window": shot.windowId, "onSpace": shot.onSpace, "blank": shot.blank]
+      if shot.blank {
+        out["note"] = "The picture is BLANK: one colour, nothing drawn. Either this window has never been on screen since the app launched, or Screen Recording is not granted for the app. Do not raise the app to see it; the tree carries the text."
+      } else if !shot.onSpace {
         // Measured: told the tiles "may be blank", the model raised the app to
         // see them. Say what the blank means and what not to do about it.
         out["note"] = "This window is on another Space. Controls and text are in the picture; content the app draws only while on screen (map tiles, video, some web views) is blank. That is the picture's limit, not a reason to raise the app: the tree already carries the text, and a task that truly needs the blank part should be reported to the user, not solved by taking their screen."
@@ -240,7 +236,11 @@ public final class Dispatcher {
     }
     let diff = last[app].map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
     last[app] = snap
-    return ["ok": true, "diff": diff, "waitedMs": waitedMs]
+    var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
+    // Nothing moved: if the backend knows why this app ignores presses, say so
+    // now, before the model retries the same control four different ways.
+    if diff == "(no changes)", let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
+    return out
   }
 
   /// How long to wait for an app to react before reporting no change, and how

@@ -117,6 +117,9 @@ public protocol Backend: AnyObject {
   /// app only draws while visible (the map tiles) was black. `windowId` nil
   /// means the focused window, else the first. Needs Screen Recording.
   func screenshot(app: String, windowId: Int?) throws -> WindowShot
+  /// Why an action may have done nothing, when the backend can tell (a
+  /// Catalyst app backgrounded behind a fullscreen Space), else nil.
+  func unresponsiveHint(app: String) -> String?
 }
 
 public struct WindowShot {
@@ -127,7 +130,10 @@ public struct WindowShot {
   public var height: Int
   public var windowId: Int
   public var onSpace: Bool
-  public init(image: Data, mime: String, width: Int, height: Int, windowId: Int, onSpace: Bool) {
-    self.image = image; self.mime = mime; self.width = width; self.height = height; self.windowId = windowId; self.onSpace = onSpace
+  /// The picture is one colour: nothing was ever drawn in this window, or the
+  /// capturing process lacks Screen Recording. Not worth handing to a model.
+  public var blank: Bool
+  public init(image: Data, mime: String, width: Int, height: Int, windowId: Int, onSpace: Bool, blank: Bool = false) {
+    self.image = image; self.mime = mime; self.width = width; self.height = height; self.windowId = windowId; self.onSpace = onSpace; self.blank = blank
   }
 }
