@@ -82,6 +82,7 @@ public final class Dispatcher {
     case "act":
       let id = try int(p, "id"); let action = try string(p, "action")
       try known(app, id)
+      try offers(app, id, action)
       try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? false)
       return try afterAction(app, p)
     case "setValue":
@@ -120,10 +121,12 @@ public final class Dispatcher {
       return out
     case "screenshot":
       let shot = try backend.screenshot(app: app, windowId: p["window"] as? Int)
-      var out: [String: Any] = ["png": shot.png.base64EncodedString(), "width": shot.width, "height": shot.height,
+      var out: [String: Any] = ["image": shot.image.base64EncodedString(), "mime": shot.mime, "width": shot.width, "height": shot.height,
                                 "window": shot.windowId, "onSpace": shot.onSpace]
       if !shot.onSpace {
-        out["note"] = "This window is on another Space. The picture is what the app has drawn while hidden: controls and text are there, but content it renders only when visible (map tiles, video, some web views) may be blank."
+        // Measured: told the tiles "may be blank", the model raised the app to
+        // see them. Say what the blank means and what not to do about it.
+        out["note"] = "This window is on another Space. Controls and text are in the picture; content the app draws only while on screen (map tiles, video, some web views) is blank. That is the picture's limit, not a reason to raise the app: the tree already carries the text, and a task that truly needs the blank part should be reported to the user, not solved by taking their screen."
       }
       return out
     case "scroll":
@@ -255,6 +258,16 @@ public final class Dispatcher {
 
   private func known(_ app: String, _ id: Int) throws {
     guard let snap = last[app], snap.nodes.contains(where: { $0.id == id }) else { throw BridgeError.noSuchElement(id) }
+  }
+
+  /// An action the element did not list is refused before it is tried. Run 4
+  /// of the Maps task: the model pressed a tab button whose line showed no
+  /// actions at all; AXPress returned success and nothing happened, and the
+  /// model spent four turns finding that out. Only a non-empty list is
+  /// trusted here — an empty one may mean the actions were never fetched.
+  private func offers(_ app: String, _ id: Int, _ action: String) throws {
+    guard let node = last[app]?.nodes.first(where: { $0.id == id }), !node.attributes.actions.isEmpty, !node.attributes.actions.contains(action) else { return }
+    throw BridgeError.actionFailed("Element \(id) does not offer \"\(action)\"; it offers {\(node.attributes.actions.joined(separator: ","))}. Use one of those, or a different path: the keyboard, or a menu bar command.")
   }
 
   private func options(_ p: [String: Any]) -> SnapshotOptions {

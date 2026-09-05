@@ -14,6 +14,7 @@ import ScreenCaptureKit
 @available(macOS 14, *)
 enum WindowCapture {
   static let timeout: TimeInterval = 5
+  static let jpegQuality: Double = 0.7
 
   static func capture(cgWindow: CGWindowID, info: WindowInfo) throws -> WindowShot {
     // A stdio tool has no window-server connection until something opens one;
@@ -32,10 +33,15 @@ enum WindowCapture {
         cfg.height = max(1, Int(w.frame.height))
         cfg.showsCursor = false
         let img = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
-        guard let png = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) else {
-          throw BridgeError.actionFailed("could not encode the capture as PNG")
+        // JPEG: the first live use returned an 880KB PNG of a 1024x768 window,
+        // most of it the photos on a place card, and every picture is re-sent
+        // with the transcript on every later turn. The same frame as JPEG at
+        // this quality is a tenth of that, and the model reads text and
+        // controls, not gradients.
+        guard let jpeg = NSBitmapImageRep(cgImage: img).representation(using: .jpeg, properties: [.compressionFactor: Self.jpegQuality]) else {
+          throw BridgeError.actionFailed("could not encode the capture")
         }
-        result = .success(WindowShot(png: png, width: img.width, height: img.height, windowId: info.id, onSpace: info.onSpace))
+        result = .success(WindowShot(image: jpeg, mime: "image/jpeg", width: img.width, height: img.height, windowId: info.id, onSpace: info.onSpace))
       } catch let e as BridgeError {
         result = .failure(e)
       } catch {

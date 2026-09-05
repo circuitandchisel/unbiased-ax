@@ -82,7 +82,7 @@ final class FakeBackend: Backend {
   func screenshot(app: String, windowId: Int?) throws -> WindowShot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     shotRequests.append((app, windowId))
-    return WindowShot(png: Data([0x89, 0x50, 0x4E, 0x47]), width: 1200, height: 800, windowId: windowId ?? 1, onSpace: !hideWindows)
+    return WindowShot(image: Data([0xFF, 0xD8, 0xFF]), mime: "image/jpeg", width: 1200, height: 800, windowId: windowId ?? 1, onSpace: !hideWindows)
   }
   /// Snapshots before the tree changes. Models an app that renders its
   /// response a beat after the action returns — which is every real app.
@@ -405,15 +405,45 @@ func runSettleTests() {
   }
 }
 
+func runRefusedActionTests() {
+  print("Refusing an action the element does not list")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  test("an action the element does not list is refused with what it does offer") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let tree = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    // The element that lists press, by the id at the front of its line.
+    guard let line = tree.components(separatedBy: "\\n").first(where: { $0.contains("{press}") }),
+          let id = Int(line.trimmingCharacters(in: .whitespaces).prefix { $0.isNumber }) else { try expect(false, "no element lists press: \(tree)"); return }
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(id),"action":"show menu"}}"#)
+    try expect(out.contains("action_failed") && out.contains("does not offer") && out.contains("{press}"), out)
+    try expectEqual(b.acted.count, 0, "nothing was tried")
+  }
+
+  test("a listed action goes through, and an element with no list is not second-guessed") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let tree = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    guard let line = tree.components(separatedBy: "\\n").first(where: { $0.contains("{press}") }),
+          let id = Int(line.trimmingCharacters(in: .whitespaces).prefix { $0.isNumber }) else { try expect(false, "no element lists press: \(tree)"); return }
+    let ok = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(id),"action":"press"}}"#)
+    try expect(ok.contains(#""ok":true"#), ok)
+    // id 1 is the application node, which lists nothing: not second-guessed.
+    let root = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    try expect(root.contains(#""ok":true"#), root)
+  }
+}
+
 func runScreenshotTests() {
   print("Photographing a window")
   func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
 
-  test("screenshot returns the PNG, its size, and which window it is") {
+  test("screenshot returns the image, its encoding and size, and which window it is") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
     let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Brave Browser"}}"#)
-    try expect(out.contains(#""png":"iVBORw==""#), out)
+    try expect(out.contains("9j") && out.contains("jpeg") && out.contains(#""image""#), out) // JSON escapes the slashes
     try expect(out.contains(#""width":1200"#) && out.contains(#""onSpace":true"#), out)
     try expect(!out.contains("note"), "a window on this Space needs no caveat: \(out)")
     try expectEqual(b.shotRequests.count, 1)

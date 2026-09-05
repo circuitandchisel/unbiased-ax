@@ -139,6 +139,41 @@ case "click-front":
   click(target)
   usleep(1_200_000)
   previous?.activate(options: [])
+case "wake":
+  // A press that does nothing on an app idle in the background: which nudge,
+  // short of activating it (a Space switch), makes the next press land?
+  func pressAndWatch(_ label: String) -> Bool {
+    let base = fingerprint()
+    let e = AXUIElementPerformAction(target, kAXPressAction as CFString)
+    for _ in 0..<35 { usleep(100_000); if fingerprint() != base { print("  \(label): AXPress -> \(e.rawValue), tree CHANGED"); return true } }
+    print("  \(label): AXPress -> \(e.rawValue), no change in 3.5s")
+    return false
+  }
+  if pressAndWatch("cold") { break }
+  // 1. a mouse-moved event posted to the pid at the element
+  var pos = CGPoint.zero, size = CGSize.zero
+  if let pv = attr(target, kAXPositionAttribute) { AXValueGetValue(pv as! AXValue, .cgPoint, &pos) }
+  if let sv = attr(target, kAXSizeAttribute) { AXValueGetValue(sv as! AXValue, .cgSize, &size) }
+  let centre = CGPoint(x: pos.x + size.width / 2, y: pos.y + size.height / 2)
+  CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: centre, mouseButton: .left)?.postToPid(pid)
+  usleep(200_000)
+  if pressAndWatch("after mouseMoved to pid") { break }
+  // 2. AXRaise on the window, without activating the app
+  print("  AXRaise(window) -> \(AXUIElementPerformAction(win, kAXRaiseAction as CFString).rawValue)")
+  usleep(300_000)
+  if pressAndWatch("after AXRaise on the window") { break }
+  // 3. AXFocused on the target
+  print("  AXFocused(target) -> \(AXUIElementSetAttributeValue(target, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue)")
+  usleep(300_000)
+  if pressAndWatch("after focusing the target") { break }
+  // 4. activate (the window server may refuse; the app may still notice)
+  let previous = NSWorkspace.shared.frontmostApplication
+  print("  activate -> \(app.activate(options: []))")
+  usleep(700_000)
+  print("  frontmost now: \(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+  _ = pressAndWatch("after activate")
+  previous?.activate(options: [])
+  exit(0)
 case "none": break
 default: print("unknown mode"); exit(2)
 }

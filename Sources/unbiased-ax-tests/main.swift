@@ -13,6 +13,7 @@ runDesktopReachTests()
 runCrossSpaceTests()
 runSettleTests()
 runScreenshotTests()
+runRefusedActionTests()
 runServerTests()
 
 finish()

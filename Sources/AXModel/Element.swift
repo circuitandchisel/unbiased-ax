@@ -62,7 +62,7 @@ public enum Role {
   public static let interactive: Set<String> = [
     "button", "checkbox", "check box", "radio button", "pop up button", "menu button",
     "menu item", "menu bar item", "text field", "text area", "search field", "secure text field",
-    "combo box", "slider", "link", "tab", "row", "cell", "disclosure triangle", "incrementor",
+    "combo box", "slider", "link", "tab", "tab button", "row", "cell", "disclosure triangle", "incrementor",
     "scroll bar", "toolbar", "window", "standard window", "dialog", "sheet", "close button",
     "minimize button", "zoom button", "full screen button",
   ]

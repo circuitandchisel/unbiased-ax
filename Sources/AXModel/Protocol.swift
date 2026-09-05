@@ -120,12 +120,14 @@ public protocol Backend: AnyObject {
 }
 
 public struct WindowShot {
-  public var png: Data
+  public var image: Data
+  /// "image/jpeg" or "image/png": what `image` is encoded as.
+  public var mime: String
   public var width: Int
   public var height: Int
   public var windowId: Int
   public var onSpace: Bool
-  public init(png: Data, width: Int, height: Int, windowId: Int, onSpace: Bool) {
-    self.png = png; self.width = width; self.height = height; self.windowId = windowId; self.onSpace = onSpace
+  public init(image: Data, mime: String, width: Int, height: Int, windowId: Int, onSpace: Bool) {
+    self.image = image; self.mime = mime; self.width = width; self.height = height; self.windowId = windowId; self.onSpace = onSpace
   }
 }
