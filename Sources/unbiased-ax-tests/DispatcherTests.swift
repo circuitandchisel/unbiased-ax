@@ -23,9 +23,11 @@ final class FakeBackend: Backend {
 
   func isTrusted() -> Bool { trusted }
   func crossSpace() -> Bool { crossSpaceOn }
+  /// False models an app that is not running yet, so a launch is cold.
+  var braveRunning = true
   func apps() -> [AppInfo] {
-    [AppInfo(pid: 10, name: "Brave Browser", bundleId: "com.brave.Browser", frontmost: true),
-     AppInfo(pid: 11, name: "Finder", bundleId: "com.apple.finder", frontmost: false)]
+    (braveRunning ? [AppInfo(pid: 10, name: "Brave Browser", bundleId: "com.brave.Browser", frontmost: true)] : [])
+      + [AppInfo(pid: 11, name: "Finder", bundleId: "com.apple.finder", frontmost: false)]
   }
   func windows(app: String) throws -> [WindowInfo] {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
@@ -463,5 +465,33 @@ func runScreenshotTests() {
     let d = Dispatcher(backend: FakeBackend())
     let out = call(d, #"{"id":1,"method":"screenshot","params":{"app":"Nope"}}"#)
     try expect(out.contains("no_such_app"), out)
+  }
+}
+
+func runLaunchShowTests() {
+  print("A cold launch shows the app once")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  test("with cross-Space on, launching an app that was not running says it was shown") {
+    let b = FakeBackend()
+    b.crossSpaceOn = true
+    b.braveRunning = false
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""shown":true"#) && out.contains("shown for about a second"), out)
+    try expect(out.contains(#""alreadyRunning":false"#), out)
+  }
+
+  test("an app already running is not shown, and neither is anything without cross-Space") {
+    let running = FakeBackend()
+    running.crossSpaceOn = true
+    let d1 = Dispatcher(backend: running)
+    let a = call(d1, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
+    try expect(!a.contains("shown"), a)
+    let blind = FakeBackend()
+    blind.braveRunning = false
+    let d2 = Dispatcher(backend: blind)
+    let b = call(d2, #"{"id":1,"method":"launch","params":{"app":"Brave Browser"}}"#)
+    try expect(!b.contains("shown"), "without cross-Space the launch is already in the foreground: \(b)")
   }
 }

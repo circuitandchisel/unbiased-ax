@@ -118,6 +118,12 @@ public final class Dispatcher {
         "count": snap.nodes.count,
       ]
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
+      if !alreadyRunning && backend.crossSpace() {
+        // See LiveBackend.showOnce: a Catalyst app never drawn ignores presses
+        // on some of its controls, so a cold launch shows it once.
+        out["shown"] = true
+        out["hint"] = ((out["hint"] as? String).map { $0 + " " } ?? "") + "The app was shown for about a second and the user's app put back, so its controls answer presses from the background."
+      }
       return out
     case "screenshot":
       let shot = try backend.screenshot(app: app, windowId: p["window"] as? Int)

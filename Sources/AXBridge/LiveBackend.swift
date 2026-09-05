@@ -270,6 +270,7 @@ public final class LiveBackend: Backend {
     // and no reason to touch focus.
     let alreadyHere = ((try? windows(app: app)) ?? []).isEmpty == false
     if alreadyHere { return true } // a readable window exists; do not touch focus
+    let wasRunning = (try? resolve(app)) != nil
 
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -296,6 +297,7 @@ public final class LiveBackend: Backend {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       if let a = try? resolve(app), let wins = try? windows(app: String(a.processIdentifier)), !wins.isEmpty {
+        if !wasRunning && crossSpace() { showOnce(a) }
         return true
       }
       Thread.sleep(forTimeInterval: 0.2)
@@ -305,6 +307,31 @@ public final class LiveBackend: Backend {
     // tells the caller to raise it.
     return (try? resolve(app)) != nil
   }
+
+  /// Bring a freshly launched app to the front for about a second, then put
+  /// the user's app back. Measured on Maps across three runs and a dozen
+  /// probes: a Catalyst app launched in the background (`open -g`) accepts
+  /// AXPress on its SwiftUI-hosted controls — search-result rows, the place
+  /// card's directions button, the travel-mode tabs — and does nothing, while
+  /// its UIKit and AppKit controls (Close, the menu bar) and posted keys work.
+  /// Once its window has been on screen once, the same presses work off-Space
+  /// for the rest of the process's life. A window capture of the never-shown
+  /// window is blank for the same reason: nothing was ever drawn.
+  ///
+  /// So a cold launch costs one Space switch there and back. That is the
+  /// price of every later press landing; the alternative was the model
+  /// retrying one dead button by four means and raising the app anyway.
+  private func showOnce(_ a: NSRunningApplication) {
+    let before = NSWorkspace.shared.frontmostApplication
+    a.activate(options: [])
+    // Wait for the switch to land — a window becomes listable on this Space —
+    // then give the app one moment on screen to draw.
+    let deadline = Date().addingTimeInterval(2.0)
+    while Date() < deadline, ((try? publicWindows(a)) ?? []).isEmpty { usleep(50_000) }
+    Thread.sleep(forTimeInterval: Self.showOnceDwell)
+    if let before, before.processIdentifier != a.processIdentifier { before.activate(options: []) }
+  }
+  static let showOnceDwell: TimeInterval = 1.0
 
   /// The Accessibility API has no scroll verb — kAXScrollToVisibleAction moves
   /// to a known element, which is no help for "show me more of this list". So
@@ -364,7 +391,6 @@ public final class LiveBackend: Backend {
     guard let el = elements[a.processIdentifier]?[target.id], let cg = RemoteToken.windowId(of: el.ref) else {
       throw BridgeError.actionFailed("could not map window \(target.id) to the window server")
     }
-    guard #available(macOS 14, *) else { throw BridgeError.actionFailed("window capture needs macOS 14 or later") }
     return try WindowCapture.capture(cgWindow: cg, info: target)
   }
 
