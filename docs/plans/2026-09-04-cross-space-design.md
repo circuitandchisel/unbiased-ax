@@ -141,7 +141,12 @@ The principle: **the model never thinks about Spaces.**
   "real windows not on this Space" — honest for the first time.
 - `tree`, `find` and every action work on off-Space windows like any other.
   The "call raise for this app first" hint is gone when `crossSpace` is on;
-  the existing three-state hint text is unchanged when it is off.
+  the existing three-state hint text is unchanged when it is off. One hint
+  survives: a read that finds no window while the window server lists some
+  says the window could not be read yet and to read again. Its count comes
+  from layer-0 windows taller than 32 px — the 30 px strips excluded — so
+  fullscreen browser panes can inflate it; it is a signal to read again, not
+  a census.
 - `raise` keeps its mechanics and narrows its meaning: bring an app forward
   because the user should see it, never as a prerequisite for reading.
 - `launch` opens in the background (`open -g`). Its wait loop changes from

@@ -26,7 +26,11 @@ Three rules the model must know:
 `hello` reports `crossSpace`. When true, windows on another Space are in the
 tree and are read, found and acted on like any other — `key` and `scroll`
 excepted until verified on a window on another Space. `windows` marks them
-`[other Space]` and `offscreen` counts them. Nothing needs raising to be read.
+`[other Space]` and `offscreen` counts them. One hint remains in this world:
+when the tree has no window and the window server still lists some, the read
+says they could not be read yet and to read again — never to raise. `offscreen`
+is then a count of what the window server lists, not of what was mapped.
+Nothing needs raising to be read.
 
 When false — the private path has not passed its self-check on this machine, or
 the process is not yet trusted — only the current Space is readable, and reads
