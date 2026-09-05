@@ -319,7 +319,7 @@ public final class LiveBackend: Backend {
   /// the app is in front, re-parks it the moment focus moves on, and takes
   /// the user's screen to do it — the exact thing this bridge exists to avoid.
   public func unresponsiveHint(app: String) -> String? {
-    guard let a = try? resolve(app), let shrunk = Self.shrunkSurface(a) else { return nil }
+    guard let a = try? resolve(app), let shrunk = shrunkSurface(app: app, pid: a.processIdentifier) else { return nil }
     let name = a.localizedName ?? app
     let sizes = "\(shrunk.actual.w)x\(shrunk.actual.h), though the tree describes it at \(shrunk.expected.w)x\(shrunk.expected.h)"
     guard Self.stageManagerOn() else {
@@ -336,25 +336,23 @@ public final class LiveBackend: Backend {
 
   /// The window's Accessibility size against the surface the window server
   /// reports, when the latter is dramatically smaller. Nil when they agree.
-  static func shrunkSurface(_ a: NSRunningApplication) -> (expected: (w: Int, h: Int), actual: (w: Int, h: Int))? {
+  ///
+  /// Built on `windows(app:)` rather than AXWindows: the windows this matters
+  /// for are precisely the ones AXWindows does not list — parked by Stage
+  /// Manager, or on another Space — and an earlier version that read
+  /// AXWindows directly found nothing in exactly the case it was written for.
+  func shrunkSurface(app: String, pid: pid_t) -> (expected: (w: Int, h: Int), actual: (w: Int, h: Int))? {
+    guard let wins = try? windows(app: app) else { return nil }
     let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
-    let root = AXUIElementCreateApplication(a.processIdentifier)
-    AXUIElementSetMessagingTimeout(root, RemoteToken.messagingTimeout)
-    var v: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString, &v) == .success else { return nil }
-    for el in axElements(v) {
-      var sv: CFTypeRef?
-      guard AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success else { continue }
-      var size = CGSize.zero
-      guard AXValueGetValue(sv as! AXValue, .cgSize, &size), size.width > 200, size.height > 200 else { continue }
-      guard let wid = RemoteToken.windowId(of: el) else { continue }
+    for win in wins where win.width > 200 && win.height > 200 && !win.minimized {
+      guard let el = elements[pid]?[win.id], let wid = RemoteToken.windowId(of: el.ref) else { continue }
       for w in list where CGWindowID((w[kCGWindowNumber as String] as? Int) ?? 0) == wid {
         guard let b = w[kCGWindowBounds as String] as? [String: Any],
               let aw = b["Width"] as? Double, let ah = b["Height"] as? Double else { continue }
-        // Half the expected area in both directions is not a resize, it is a
-        // thumbnail: the measured case was 108x97 against 1024x768.
-        if aw < size.width / 2 && ah < size.height / 2 {
-          return ((Int(size.width), Int(size.height)), (Int(aw), Int(ah)))
+        // Half the expected extent in both directions is not a resize, it is a
+        // thumbnail: the measured case was 108x104 against 1024x768.
+        if aw < Double(win.width) / 2 && ah < Double(win.height) / 2 {
+          return ((win.width, win.height), (Int(aw), Int(ah)))
         }
       }
     }
