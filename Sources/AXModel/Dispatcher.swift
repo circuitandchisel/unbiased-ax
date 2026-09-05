@@ -178,6 +178,9 @@ public final class Dispatcher {
     // nothing, and only one that truly changes nothing waits out the deadline.
     let opts = options(p)
     var snap = try backend.snapshot(app: app, options: opts)
+    // How long the action waited for the app, so a caller's diagnostics can
+    // say where a slow task spent its time.
+    var waitedMs = 0
     if let prev = last[app] {
       let started = Date()
       var stableLooks = 0
@@ -193,19 +196,34 @@ public final class Dispatcher {
       // The cost of being wrong here is a whole model round trip — seconds —
       // which is precisely what the model spent seven of in one task, reading
       // again because the action said nothing had happened.
-      while Date().timeIntervalSince(started) < Self.settleDeadline {
+      //
+      // Second measurement, a day later: pressing a Maps search result. The
+      // result LIST collapsed within ~300ms and the tree went quiet; the place
+      // card that replaces it rendered ~2.5s after the press. Quiet-and-past-
+      // the-floor returned the collapse alone, and the model — shown a tree
+      // that had only lost things — read again, pressed again, and toggled a
+      // setting while it was at it. Three turns. So a tree that has only
+      // SHRUNK since the action is treated as in transition, not settled: it
+      // gets a longer deadline, and returns early only once something has
+      // arrived to replace what left. An action whose honest final state is a
+      // smaller tree (closing a menu, dismissing a dialog) pays the longer
+      // wait — seconds, against the model turns the alternative costs.
+      while true {
         let elapsed = Date().timeIntervalSince(started)
         let reacted = Differ.changed(from: prev, to: snap)
-        if reacted && stableLooks >= 1 && elapsed >= Self.settleFloor { break }
+        let shrank = snap.nodes.count < prev.nodes.count
+        if elapsed >= (shrank ? Self.settleDeadlineShrunk : Self.settleDeadline) { break }
+        if reacted && !shrank && stableLooks >= 1 && elapsed >= Self.settleFloor { break }
         Thread.sleep(forTimeInterval: Self.settleStep)
         let again = try backend.snapshot(app: app, options: opts)
         stableLooks = Differ.changed(from: snap, to: again) ? 0 : stableLooks + 1
         snap = again
       }
+      waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
     let diff = last[app].map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
     last[app] = snap
-    return ["ok": true, "diff": diff]
+    return ["ok": true, "diff": diff, "waitedMs": waitedMs]
   }
 
   /// How long to wait for an app to react before reporting no change, and how
@@ -217,6 +235,10 @@ public final class Dispatcher {
   /// this in full, which is the honest cost of not being able to tell a no-op
   /// from an app that is still thinking.
   static let settleDeadline = 1.5
+  /// Upper bound while the tree has only shrunk since the action: what left
+  /// is likely making room for what has not arrived yet. Maps' place card
+  /// landed ~2.5s after the result list collapsed.
+  static let settleDeadlineShrunk = 3.5
   /// Do not declare an app settled before this, once it has reacted at all.
   /// Maps' results land at ~477ms; anything under that reports the keystroke
   /// echo and calls it a result.

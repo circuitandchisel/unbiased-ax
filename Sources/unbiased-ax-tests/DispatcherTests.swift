@@ -40,12 +40,16 @@ final class FakeBackend: Backend {
     snapshotCount += 1
     // Once the app has "rendered", the tree gains a node so the diff is real.
     let late = snapshotsUntilChange > 0 && snapshotCount > snapshotsUntilChange
+    // Between the baseline and the late render the tree can pass through a
+    // smaller state — a result list that collapsed before its place card came.
+    let shrunk = !late && shrunkUntilSnapshot > 0 && snapshotCount > 1 && snapshotCount <= shrunkUntilSnapshot
     var reg = registries[app] ?? IdRegistry()
     defer { registries[app] = reg }
     let root = late
       ? group("w", [button("w/ok", "OK"),
                     FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20)),
                     button("w/late", "Result")], title: "Win")
+      : shrunk ? group("w", [button("w/ok", "OK")], title: "Win")
       : tree
     return Snapshot.build(root: root, source: FakeSource(), registry: &reg, options: options)
   }
@@ -77,6 +81,8 @@ final class FakeBackend: Backend {
   /// Snapshots before the tree changes. Models an app that renders its
   /// response a beat after the action returns — which is every real app.
   var snapshotsUntilChange = 0
+  /// Snapshots 2...N show a tree that has only lost nodes; see snapshot().
+  var shrunkUntilSnapshot = 0
   private var snapshotCount = 0
   var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
   func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
@@ -363,5 +369,32 @@ func runSettleTests() {
     let elapsed = Date().timeIntervalSince(started)
     try expect(out.contains("(no changes)"), out)
     try expect(elapsed < 3.0, "the wait must be bounded (took \(elapsed)s)")
+    try expect(out.contains(#""waitedMs""#), "the result says how long it waited: \(out)")
+  }
+
+  // Pressing a Maps search result: the list collapsed at ~300ms and the tree
+  // went quiet; the place card rendered ~2.5s after the press. Reporting the
+  // collapse alone cost three model turns.
+
+  test("a tree that has only shrunk is in transition: the action waits for what replaces it") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.shrunkUntilSnapshot = 18 // ~1.7s of collapsed list at one look per 100ms
+    b.snapshotsUntilChange = 18 // then the card
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    try expect(out.contains("Result"), "the replacement should be in the diff, not just the collapse: \(out)")
+  }
+
+  test("a tree that shrinks and stays shrunk still reports the removal, within the longer bound") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.shrunkUntilSnapshot = 1_000
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains("removed"), out)
+    try expect(elapsed >= 3.3 && elapsed < 4.5, "the shrunk-tree bound is 3.5s (took \(elapsed)s)")
   }
 }

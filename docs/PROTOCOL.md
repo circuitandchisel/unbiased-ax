@@ -17,9 +17,11 @@ Three rules the model must know:
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
    when nothing moved. `find`, `launch` and every action reset the baseline.
 3. **Every action waits for the app to react** before reporting: at least 0.6s,
-   at most 1.5s. An action that changes nothing pays the full 1.5s. The first
-   action on an app never read has no baseline: it returns at once, and `diff`
-   is the full tree.
+   at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
+   has only *shrunk* since the action is treated as in transition (a result
+   list that collapsed before its place card rendered) and waits up to 3.5s for
+   what replaces it. The result carries `waitedMs`. The first action on an app
+   never read has no baseline: it returns at once, and `diff` is the full tree.
 
 ## Spaces
 
