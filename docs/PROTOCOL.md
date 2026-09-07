@@ -28,7 +28,8 @@ Three rules the model must know:
 4. **`tree` returns a diff after the first call** for an app, unless
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
    when nothing moved. `find`, `launch` and every action reset the baseline.
-5. **Every action waits for the app to react** before reporting: at least 0.6s,
+5. **Every action waits for the app to react** before reporting, unless it says
+   `"settle": false`: at least 0.6s,
    at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
    has lost at least ten nodes AND a tenth of itself since the action is
    treated as in transition (a result list that collapsed before its place card
@@ -84,6 +85,15 @@ With Stage Manager on, macOS parks every inactive app's window into the side str
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
+
+Every action also accepts `settle: false`, which returns `{ok, settled:false}`
+the moment the app accepts it: no wait, no snapshot, and the diff baseline left
+where it was. It is for the middle of a known sequence — five inspector fields
+set on one shape — where only the last step's diff is read; the closing action
+settles as usual and its diff then covers the whole run. Measured on a Figma
+icon built out of inspector fields: 372 actions paid 253 seconds of settling, a
+fifth of the task. It does not skip any refusal: an unlisted action, a missing
+id and a repeat that changed nothing are declined exactly as before.
 
 Every action accepts the `tree` options (`depth`, `maxElements`, `interactive`,
 `web`; `geometry` is not one of them for actions) for the snapshot it takes

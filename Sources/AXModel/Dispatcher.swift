@@ -265,6 +265,16 @@ public final class Dispatcher {
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
   private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil) throws -> Any {
+    // `"settle": false` means the caller is mid-sequence and does not want a
+    // diff for this step: do the action and return. Measured on a Figma icon
+    // built out of inspector fields — 372 actions, 253 seconds of settle
+    // waiting, a fifth of the run — where every step of a five-step batch paid
+    // for a reaction nobody read, because the batch reports its NET effect at
+    // the end. The baseline is deliberately left alone, so that closing read
+    // measures the whole sequence rather than only its last step.
+    if (p["settle"] as? Bool) == false {
+      return ["ok": true, "settled": false]
+    }
     // Snapshot AFTER the app has had a chance to react, not the instant the
     // action returns. Measured: pressing return in Maps' search field produced
     // "(no changes)" while the three results were on their way, and the model

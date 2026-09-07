@@ -20,6 +20,7 @@ runParkedRaiseTests()
 runRepeatTests()
 runKeyAndPointerTests()
 runFigmaCostTests()
+runSettleFlagTests()
 runServerTests()
 
 finish()

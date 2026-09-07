@@ -899,3 +899,56 @@ func runFigmaCostTests() {
     try expect(elapsed >= 3.3, "a big shrink keeps the transition budget (took \(elapsed)s)")
   }
 }
+
+func runSettleFlagTests() {
+  print("Skipping the wait mid-sequence")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  // A Figma icon built out of inspector fields: 372 actions and 253 seconds of
+  // settle waiting, a fifth of the run. Every step of a batch paid for a
+  // reaction nobody read, because a batch reports its NET effect at the end.
+
+  test("settle:false does the action and returns at once") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"140","settle":false}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains(#""ok":true"#) && out.contains(#""settled":false"#), out)
+    try expect(elapsed < 0.3, "no floor, no deadline (took \(elapsed)s)")
+    try expectEqual(b.setValues.count, 1, "the action still happened")
+  }
+
+  test("the baseline is untouched, so a closing read reports the whole sequence") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.snapshotsUntilChange = 1 // the tree gains a node from here on
+    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press","settle":false}}"#)
+    _ = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press","settle":false}}"#)
+    let closing = call(d, #"{"id":4,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(closing.contains("Result"), "the net effect shows up in the closing read: \(closing)")
+  }
+
+  test("a single action still settles, so the Maps case is untouched") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains(#""waitedMs""#), out)
+    try expect(elapsed >= 0.5, "the floor still applies without the flag (took \(elapsed)s)")
+  }
+
+  test("settle:false is not a way to dodge the guards") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let unlisted = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"show menu","settle":false}}"#)
+    try expect(unlisted.contains("does not offer"), "the action list is still checked: \(unlisted)")
+    let gone = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":9999,"action":"press","settle":false}}"#)
+    try expect(gone.contains("no_such_element"), gone)
+  }
+}
