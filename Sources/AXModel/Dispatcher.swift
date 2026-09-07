@@ -12,14 +12,20 @@ public final class Dispatcher {
   /// thousand would be a way to hold the desktop tools for a minute.
   public static let maxPathPoints = 60
 
-  /// A named key, or one letter or digit. Letters matter because a design tool
-  /// puts its tools behind one-character shortcuts and exposes no element for
-  /// them at all: Figma's pen is `p` and nothing else, which is where two
-  /// separate agents stalled on the same task.
+  /// The punctuation that carries a shortcut. Figma's bring-to-front is
+  /// command+shift+], and refusing `]` sent one run into several minutes of
+  /// re-ordering layers by hand.
+  public static let punctuationKeys = "[]-=,./;'\\`"
+
+  /// A named key, or one character: a letter, a digit, or shortcut
+  /// punctuation. Letters matter because a design tool puts its tools behind
+  /// one-character shortcuts and exposes no element for them at all: Figma's
+  /// pen is `p` and nothing else, which is where two separate agents stalled.
   public static func keyAllowed(_ key: String) -> Bool {
     if keys.contains(key) { return true }
     guard key.count == 1, let c = key.unicodeScalars.first else { return false }
-    return (c >= "a" && c <= "z") || (c >= "0" && c <= "9")
+    if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") { return true }
+    return punctuationKeys.unicodeScalars.contains(c)
   }
 
   private let backend: Backend
@@ -303,7 +309,16 @@ public final class Dispatcher {
       while true {
         let elapsed = Date().timeIntervalSince(started)
         let reacted = Differ.changed(from: prev, to: snap)
-        let shrank = snap.nodes.count < prev.nodes.count
+        // Only a SUBSTANTIAL shrink counts as a transition. The rule was
+        // tuned on Maps, where pressing a result collapses a whole list of
+        // rows before the place card arrives; in Figma every selection change
+        // and closing panel loses a handful of rows and nothing else is
+        // coming, so a bare "fewer nodes" test paid the long deadline over and
+        // over — measured at 17 waits over three seconds, 94 seconds of
+        // waiting in one task. A list collapsing loses tens of nodes; a panel
+        // tidying itself loses a few.
+        let lost = prev.nodes.count - snap.nodes.count
+        let shrank = lost >= Self.shrinkNodes && lost * 10 >= prev.nodes.count
         if elapsed >= (shrank ? Self.settleDeadlineShrunk : Self.settleDeadline) { break }
         if reacted && !shrank && stableLooks >= 1 && elapsed >= Self.settleFloor { break }
         Thread.sleep(forTimeInterval: Self.settleStep)
@@ -346,6 +361,9 @@ public final class Dispatcher {
   /// is likely making room for what has not arrived yet. Maps' place card
   /// landed ~2.5s after the result list collapsed.
   static let settleDeadlineShrunk = 3.5
+  /// How many nodes an app must lose before the tree counts as in transition
+  /// rather than merely tidier. Both this and a tenth of the tree must go.
+  static let shrinkNodes = 10
   /// Do not declare an app settled before this, once it has reacted at all.
   /// Maps' results land at ~477ms; anything under that reports the keystroke
   /// echo and calls it a result.

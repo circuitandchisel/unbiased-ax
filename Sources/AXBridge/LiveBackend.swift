@@ -247,6 +247,10 @@ public final class LiveBackend: Backend {
     "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15, "s": 1, "t": 17, "u": 32,
     "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
     "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+    // Shortcut punctuation. `]` and `[` are bring-to-front and send-to-back in
+    // every design tool; refusing them cost one run several minutes of
+    // re-ordering layers the long way.
+    "[": 33, "]": 30, "-": 27, "=": 24, ",": 43, ".": 47, "/": 44, ";": 41, "'": 39, "\\": 42, "`": 50,
   ]
 
   static func flags(for modifiers: [String]) -> CGEventFlags {

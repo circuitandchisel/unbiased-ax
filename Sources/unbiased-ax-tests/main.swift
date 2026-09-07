@@ -19,6 +19,7 @@ runUnresponsiveHintTests()
 runParkedRaiseTests()
 runRepeatTests()
 runKeyAndPointerTests()
+runFigmaCostTests()
 runServerTests()
 
 finish()

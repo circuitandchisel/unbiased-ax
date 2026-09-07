@@ -17,8 +17,11 @@ final class FakeBackend: Backend {
   var crossSpaceOn = false
   var keys: [(app: String, key: String)] = []
   var registries: [String: IdRegistry] = [:]
+  /// The baseline: the OK button and the address field the tests act on, plus
+  /// padding so a "lost 30 nodes" shrink is expressible at all.
   let tree = group("w", [button("w/ok", "OK"),
-                         FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))],
+                         FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))]
+                        + (0..<38).map { button("w/pad\($0)", "Pad \($0)") },
                    title: "Win")
 
   func isTrusted() -> Bool { trusted }
@@ -60,8 +63,9 @@ final class FakeBackend: Backend {
     let root = late
       ? group("w", [button("w/ok", "OK"),
                     FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20)),
-                    button("w/late", "Result")], title: "Win")
-      : shrunk ? group("w", [button("w/ok", "OK")], title: "Win")
+                    button("w/late", "Result")]
+                   + (0..<38).map { button("w/pad\($0)", "Pad \($0)") }, title: "Win")
+      : shrunk ? group("w", (0..<max(0, 40 - shrinkBy)).map { button("w/pad\($0)", "Pad \($0)") }, title: "Win")
       : tree
     return Snapshot.build(root: root, source: FakeSource(), registry: &reg, options: options)
   }
@@ -121,6 +125,9 @@ final class FakeBackend: Backend {
   var snapshotsUntilChange = 0
   /// Snapshots 2...N show a tree that has only lost nodes; see snapshot().
   var shrunkUntilSnapshot = 0
+  /// How many nodes the shrunk tree loses. A panel closing loses a couple; a
+  /// result list collapsing loses tens, and only the second is a transition.
+  var shrinkBy = 1
   /// Models an app tearing a control down and building it again: same role and
   /// title, new identity, so the registry gives it a new id.
   var rebuildOK = false
@@ -424,6 +431,7 @@ func runSettleTests() {
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     b.shrunkUntilSnapshot = 18 // ~1.7s of collapsed list at one look per 100ms
+    b.shrinkBy = 30            // a whole result list, not a tidying panel
     b.snapshotsUntilChange = 18 // then the card
     let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
     try expect(out.contains("Result"), "the replacement should be in the diff, not just the collapse: \(out)")
@@ -434,6 +442,7 @@ func runSettleTests() {
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     b.shrunkUntilSnapshot = 1_000
+    b.shrinkBy = 30 // a whole list, which is what buys the longer bound
     let started = Date()
     let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
     let elapsed = Date().timeIntervalSince(started)
@@ -835,5 +844,58 @@ func runKeyAndPointerTests() {
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[{"x":0.5,"y":0.5}]}}"#)
     try expect(out.contains("parked by Stage Manager") && out.contains("action_failed"), out)
+  }
+}
+
+func runFigmaCostTests() {
+  print("What the Figma run cost")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+
+  // command+shift+] is bring-to-front in every design tool. Refusing `]` sent
+  // one run into several minutes of re-ordering layers by hand.
+  test("shortcut punctuation is a key, and a two-character string still is not") {
+    for k in ["]", "[", ",", ".", "/", "-", "=", ";", "'", "\\", "`"] {
+      try expect(Dispatcher.keyAllowed(k), "\(k) carries a shortcut")
+    }
+    try expect(!Dispatcher.keyAllowed("]]"))
+    try expect(!Dispatcher.keyAllowed("cmd"))
+  }
+
+  test("bring-to-front reaches the backend as one key with two modifiers") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"key","params":{"app":"Brave Browser","key":"]","modifiers":["command","shift"]}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.keys.last?.key, "]")
+    try expectEqual(b.keyMods.last ?? [], ["command", "shift"])
+  }
+
+  // The transition rule was tuned on Maps, where a result list collapses
+  // before a place card arrives. In Figma every selection change loses a
+  // handful of rows and nothing more is coming, so a bare "fewer nodes" test
+  // paid the long deadline 17 times in one task — 94 seconds of waiting.
+  test("a tree that loses a few rows is tidier, not in transition, and returns at the floor") {
+    let b = FakeBackend()
+    b.shrunkUntilSnapshot = 1_000
+    b.shrinkBy = 2 // a panel closing
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let started = Date()
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(out.contains("removed"), out)
+    try expect(elapsed < 2.0, "a small shrink must not buy the 3.5s transition budget (took \(elapsed)s)")
+  }
+
+  test("a tree that loses a whole list is still in transition and still waits") {
+    let b = FakeBackend()
+    b.shrunkUntilSnapshot = 1_000
+    b.shrinkBy = 30 // a result list collapsing
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let started = Date()
+    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
+    let elapsed = Date().timeIntervalSince(started)
+    try expect(elapsed >= 3.3, "a big shrink keeps the transition budget (took \(elapsed)s)")
   }
 }

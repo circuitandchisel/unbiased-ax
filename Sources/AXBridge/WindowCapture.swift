@@ -26,6 +26,9 @@ import ScreenCaptureKit
 public enum WindowCapture {
   static let timeout: TimeInterval = 8
   static let jpegQuality: Double = 0.7
+  /// Longest edge of a capture, in pixels. 1600 keeps a 4K window legible for
+  /// layout and colour at about a tenth of the bytes.
+  static let maxEdge = 1600
   static let flag = "--capture"
   static let helperName = "unbiased-ax-capture"
 
@@ -115,9 +118,17 @@ public enum WindowCapture {
         guard let w = content.windows.first(where: { $0.windowID == CGWindowID(wid) }) else {
           result = ["error": "the window server no longer lists that window"]; done.signal(); return
         }
+        // Capped, not captured at native size. A 3840x2160 window came back
+        // as 340KB of JPEG, and six of them in one Figma task made 2MB of
+        // image — re-sent with the transcript on every later turn, which
+        // roughly tripled the per-turn latency and compacted the conversation
+        // mid-task. These are read for layout and colour, not fine detail, so
+        // the long edge is bounded and the aspect ratio kept.
+        let longest = max(w.frame.width, w.frame.height)
+        let scale = longest > Double(maxEdge) ? Double(maxEdge) / longest : 1.0
         let cfg = SCStreamConfiguration()
-        cfg.width = max(1, Int(w.frame.width))
-        cfg.height = max(1, Int(w.frame.height))
+        cfg.width = max(1, Int(w.frame.width * scale))
+        cfg.height = max(1, Int(w.frame.height * scale))
         cfg.showsCursor = false
         let img = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: w), configuration: cfg)
         let rep = NSBitmapImageRep(cgImage: img)

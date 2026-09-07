@@ -30,9 +30,12 @@ Three rules the model must know:
    when nothing moved. `find`, `launch` and every action reset the baseline.
 5. **Every action waits for the app to react** before reporting: at least 0.6s,
    at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
-   has only *shrunk* since the action is treated as in transition (a result
-   list that collapsed before its place card rendered) and waits up to 3.5s for
-   what replaces it. The result carries `waitedMs`. The first action on an app
+   has lost at least ten nodes AND a tenth of itself since the action is
+   treated as in transition (a result list that collapsed before its place card
+   rendered) and waits up to 3.5s for what replaces it. Both thresholds matter:
+   a bare "fewer nodes" test also fired on every Figma selection change and
+   closing panel, where nothing more was coming, and cost 94 seconds of waiting
+   in one task. The result carries `waitedMs`. The first action on an app
    never read has no baseline: it returns at once, and `diff` is the full tree.
 
 ## Spaces
