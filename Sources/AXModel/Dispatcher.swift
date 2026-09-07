@@ -10,6 +10,8 @@ public final class Dispatcher {
 
   private let backend: Backend
   private var last: [String: Snapshot] = [:]
+  /// See remember(_:_:) — id -> what that id described, per app.
+  private var idMemory: [String: [Int: Attributes]] = [:]
 
   public init(backend: Backend) { self.backend = backend }
 
@@ -52,7 +54,7 @@ public final class Dispatcher {
       return out
     case "tree":
       let snap = try backend.snapshot(app: app, options: options(p))
-      defer { last[app] = snap }
+      defer { last[app] = snap; remember(app, snap) }
       var out: [String: Any] = ["count": snap.nodes.count, "truncated": snap.truncated]
       if let prev = last[app], !((p["full"] as? Bool) ?? false) {
         out["diff"] = Differ.render(from: prev, to: snap, geometry: geometry)
@@ -69,7 +71,7 @@ public final class Dispatcher {
       return out
     case "find":
       let snap = try backend.snapshot(app: app, options: options(p))
-      last[app] = snap
+      last[app] = snap; remember(app, snap)
       let role = p["role"] as? String
       let needle = (p["title"] as? String)?.lowercased()
       let hits = snap.nodes.filter { n in
@@ -80,23 +82,23 @@ public final class Dispatcher {
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "act":
-      let id = try int(p, "id"); let action = try string(p, "action")
-      try known(app, id)
+      let asked = try int(p, "id"); let action = try string(p, "action")
+      let id = try resolveId(app, asked)
       try offers(app, id, action)
       try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? false)
-      return try afterAction(app, p)
+      return try afterAction(app, p, refound: asked == id ? nil : (asked, id))
     case "setValue":
-      let id = try int(p, "id"); let value = try string(p, "value")
-      try known(app, id)
+      let asked = try int(p, "id"); let value = try string(p, "value")
+      let id = try resolveId(app, asked)
       try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? false)
-      return try afterAction(app, p)
+      return try afterAction(app, p, refound: asked == id ? nil : (asked, id))
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keys.contains(key) else { throw BridgeError.badParams("Unknown key \"\(key)\". Keys: \(Self.keys.joined(separator: ", ")).") }
-      let focusId = p["id"] as? Int
-      if let id = focusId { try known(app, id) }
+      let asked = p["id"] as? Int
+      let focusId = try asked.map { try resolveId(app, $0) }
       try backend.pressKey(app: app, key: key, focusId: focusId)
-      return try afterAction(app, p)
+      return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
     case "raise":
       try backend.raise(app: app, windowId: p["window"] as? Int)
       return try afterAction(app, p)
@@ -110,7 +112,7 @@ public final class Dispatcher {
       // and a launched app is the one case where waiting for it to be readable
       // is our job rather than something to make the model poll for.
       let snap = try backend.snapshot(app: app, options: options(p))
-      last[app] = snap
+      last[app] = snap; remember(app, snap)
       var out: [String: Any] = [
         "ok": true,
         "alreadyRunning": alreadyRunning,
@@ -132,8 +134,7 @@ public final class Dispatcher {
       }
       return out
     case "scroll":
-      let id = try int(p, "id")
-      try known(app, id)
+      let id = try resolveId(app, try int(p, "id"))
       let dy = (p["dy"] as? Int) ?? 0
       let dx = (p["dx"] as? Int) ?? 0
       guard dx != 0 || dy != 0 else { throw BridgeError.badParams("Pass a non-zero dx or dy. Negative dy scrolls down, positive up.") }
@@ -179,7 +180,7 @@ public final class Dispatcher {
 
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
-  private func afterAction(_ app: String, _ p: [String: Any]) throws -> Any {
+  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil) throws -> Any {
     // Snapshot AFTER the app has had a chance to react, not the instant the
     // action returns. Measured: pressing return in Maps' search field produced
     // "(no changes)" while the three results were on their way, and the model
@@ -235,8 +236,14 @@ public final class Dispatcher {
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
     let diff = last[app].map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
-    last[app] = snap
+    last[app] = snap; remember(app, snap)
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
+    if let refound {
+      // Say it plainly: the caller's number is stale from here on, and the
+      // reason its next read looks renumbered is this, not a phantom.
+      out["refoundId"] = refound.to
+      out["note"] = "Element \(refound.from) was gone; the same control is now \(refound.to) and that is what was acted on. Use \(refound.to) from here."
+    }
     // Nothing moved: if the backend knows why this app ignores presses, say so
     // now, before the model retries the same control four different ways.
     if diff == "(no changes)", let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
@@ -262,9 +269,51 @@ public final class Dispatcher {
   static let settleFloor = 0.6
   static let settleStep = 0.1
 
-  private func known(_ app: String, _ id: Int) throws {
-    guard let snap = last[app], snap.nodes.contains(where: { $0.id == id }) else { throw BridgeError.noSuchElement(id) }
+  /// The id the caller means, in terms of the CURRENT snapshot.
+  ///
+  /// An id is the identity of one element, so an app that tears a control down
+  /// and builds it again gives the same-looking control a new id. The caller is
+  /// then holding a number for something that no longer exists, and every such
+  /// refusal costs a whole model round trip to re-read and try again. Measured
+  /// on Maps: twice in one task, and once in Codex's own run of it.
+  ///
+  /// So when the id is gone, look at what it USED to be and see whether the
+  /// snapshot has exactly one element that matches. One match is the same
+  /// control after a rebuild. Zero or several is a genuine miss, and refusing
+  /// is right: acting on a guess is worse than another read.
+  private func resolveId(_ app: String, _ id: Int) throws -> Int {
+    guard let snap = last[app] else { throw BridgeError.noSuchElement(id) }
+    if snap.nodes.contains(where: { $0.id == id }) { return id }
+    guard let want = idMemory[app]?[id], Self.identifiable(want) else { throw BridgeError.noSuchElement(id) }
+    let matches = snap.nodes.filter { Self.sameControl($0.attributes, want) }
+    guard matches.count == 1 else { throw BridgeError.noSuchElement(id) }
+    return matches[0].id
   }
+
+  /// Only a control with something to match on can be re-found. A bare
+  /// "button" with no title and no value describes half a toolbar.
+  private static func identifiable(_ a: Attributes) -> Bool {
+    !(a.title ?? "").isEmpty || !(a.value ?? "").isEmpty
+  }
+
+  /// Same role, same title, same value. Deliberately not position: a control
+  /// that moved is exactly the case this exists for.
+  private static func sameControl(_ a: Attributes, _ b: Attributes) -> Bool {
+    a.role == b.role && (a.title ?? "") == (b.title ?? "") && (a.value ?? "") == (b.value ?? "")
+  }
+
+  /// What each id looked like, across every snapshot of an app, so a refused
+  /// id can be matched against the control it named. Capped: ids only ever
+  /// increase, so dropping the lowest drops the oldest.
+  private func remember(_ app: String, _ snap: Snapshot) {
+    var mem = idMemory[app] ?? [:]
+    for n in snap.nodes where Self.identifiable(n.attributes) { mem[n.id] = n.attributes }
+    if mem.count > Self.idMemoryCap {
+      for id in mem.keys.sorted().prefix(mem.count - Self.idMemoryCap) { mem.removeValue(forKey: id) }
+    }
+    idMemory[app] = mem
+  }
+  static let idMemoryCap = 6_000
 
   /// An action the element did not list is refused before it is tried. Run 4
   /// of the Maps task: the model pressed a tab button whose line showed no

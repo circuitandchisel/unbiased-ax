@@ -13,10 +13,16 @@ Three rules the model must know:
    later hits the same element or is refused with `no_such_element` — never a
    different element. An element absent from one snapshot and back in the next
    gets a new id.
-2. **`tree` returns a diff after the first call** for an app, unless
+2. **An id the app rebuilt is re-found.** Ids are element identities, so a
+   control torn down and rebuilt gets a new one. When an action names an id the
+   latest snapshot no longer has, the bridge matches what that id described
+   (role, title, value) against the snapshot: exactly one match is acted on and
+   the result carries `refoundId` and a `note`. Zero matches, several matches,
+   or a control with neither title nor value is refused as before.
+3. **`tree` returns a diff after the first call** for an app, unless
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
    when nothing moved. `find`, `launch` and every action reset the baseline.
-3. **Every action waits for the app to react** before reporting: at least 0.6s,
+4. **Every action waits for the app to react** before reporting: at least 0.6s,
    at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
    has only *shrunk* since the action is treated as in transition (a result
    list that collapsed before its place card rendered) and waits up to 3.5s for

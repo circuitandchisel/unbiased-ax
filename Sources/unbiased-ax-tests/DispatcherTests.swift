@@ -47,6 +47,16 @@ final class FakeBackend: Backend {
     let shrunk = !late && shrunkUntilSnapshot > 0 && snapshotCount > 1 && snapshotCount <= shrunkUntilSnapshot
     var reg = registries[app] ?? IdRegistry()
     defer { registries[app] = reg }
+    if twoOKs {
+      let ambiguous = group("w", [button("w/ok-a", "OK"), button("w/ok-b", "OK")], title: "Win")
+      return Snapshot.build(root: ambiguous, source: FakeSource(), registry: &reg, options: options)
+    }
+    if rebuildOK {
+      let rebuilt = group("w", [button("w/ok-rebuilt", "OK"),
+                                FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))],
+                          title: "Win")
+      return Snapshot.build(root: rebuilt, source: FakeSource(), registry: &reg, options: options)
+    }
     let root = late
       ? group("w", [button("w/ok", "OK"),
                     FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20)),
@@ -94,6 +104,11 @@ final class FakeBackend: Backend {
   var snapshotsUntilChange = 0
   /// Snapshots 2...N show a tree that has only lost nodes; see snapshot().
   var shrunkUntilSnapshot = 0
+  /// Models an app tearing a control down and building it again: same role and
+  /// title, new identity, so the registry gives it a new id.
+  var rebuildOK = false
+  /// Two controls that match each other: re-finding must refuse, not pick.
+  var twoOKs = false
   private var snapshotCount = 0
   var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
   func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
@@ -505,5 +520,49 @@ func runUnresponsiveHintTests() {
     _ = call(d2, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     let b = call(d2, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":1,"action":"press"}}"#)
     try expect(!b.contains("hint"), "the app reacted, so nothing needs explaining: \(b)")
+  }
+}
+
+func runRefindTests() {
+  print("Re-finding an id the app rebuilt")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+  // The fake's tree is fixed: 1 group, 2 the OK button, 3 the address field.
+  let ok = 2
+
+  // Measured twice on Maps and once in Codex's run of the same task: an app
+  // rebuilds a control, the caller's id is refused, and a whole model round
+  // trip goes on reading and trying again.
+
+  test("an id the app rebuilt is matched to the same control and acted on") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let first = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(first.contains("OK"), first)
+    b.rebuildOK = true
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#) // the app rebuilt it
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expect(out.contains(#""refoundId""#), "the caller must be told the new id: \(out)")
+    guard let acted = b.acted.last else { try expect(false, "nothing was acted on"); return }
+    try expect(acted.id != ok, "it acted on the new id, not the stale one: \(acted)")
+  }
+
+  test("two controls that match each other are refused rather than guessed between") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.twoOKs = true
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(out.contains("no_such_element"), "ambiguity must refuse rather than pick: \(out)")
+    try expectEqual(b.acted.count, 0)
+  }
+
+  test("an id that was never handed out is refused as before") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":9999,"action":"press"}}"#)
+    try expect(out.contains("no_such_element"), out)
   }
 }
