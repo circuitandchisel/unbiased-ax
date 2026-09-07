@@ -19,10 +19,16 @@ Three rules the model must know:
    (role, title, value) against the snapshot: exactly one match is acted on and
    the result carries `refoundId` and a `note`. Zero matches, several matches,
    or a control with neither title nor value is refused as before.
-3. **`tree` returns a diff after the first call** for an app, unless
+3. **The same action, after it changed nothing, is refused once.** An action
+   that was accepted and moved nothing cannot move anything on a second try, so
+   the identical verb on the identical element is declined with a pointer at a
+   different path. An action that DID change something may be repeated freely,
+   and `key` is exempt entirely: an app that does not expose its selection
+   makes every arrow key look like a no-op.
+4. **`tree` returns a diff after the first call** for an app, unless
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
    when nothing moved. `find`, `launch` and every action reset the baseline.
-4. **Every action waits for the app to react** before reporting: at least 0.6s,
+5. **Every action waits for the app to react** before reporting: at least 0.6s,
    at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
    has only *shrunk* since the action is treated as in transition (a result
    list that collapsed before its place card rendered) and waits up to 3.5s for

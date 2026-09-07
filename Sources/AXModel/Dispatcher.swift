@@ -16,6 +16,9 @@ public final class Dispatcher {
   /// episode. Cleared the moment the window is seen un-parked, so each new
   /// episode gets one refusal — see the "raise" case.
   private var refusedRaise: Set<String> = []
+  /// Per app, the exact action that was last accepted and changed nothing.
+  /// Sending it again is refused once — see repeatCheck.
+  private var lastNoChange: [String: String] = [:]
 
   public init(backend: Backend) { self.backend = backend }
 
@@ -89,18 +92,27 @@ public final class Dispatcher {
       let asked = try int(p, "id"); let action = try string(p, "action")
       let id = try resolveId(app, asked)
       try offers(app, id, action)
+      let key = Self.actionKey("act", id: id, detail: action)
+      try repeatCheck(app, key)
       try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? false)
-      return try afterAction(app, p, refound: asked == id ? nil : (asked, id))
+      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "setValue":
       let asked = try int(p, "id"); let value = try string(p, "value")
       let id = try resolveId(app, asked)
+      let key = Self.actionKey("setValue", id: id, detail: value)
+      try repeatCheck(app, key)
       try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? false)
-      return try afterAction(app, p, refound: asked == id ? nil : (asked, id))
+      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keys.contains(key) else { throw BridgeError.badParams("Unknown key \"\(key)\". Keys: \(Self.keys.joined(separator: ", ")).") }
       let asked = p["id"] as? Int
       let focusId = try asked.map { try resolveId(app, $0) }
+      // Keys are exempt from repeatCheck. An app that does not expose its
+      // selection in the tree makes every arrow key look like a no-op, and
+      // refusing the second one would break moving through a list — the very
+      // path the parked-window advice sends callers down. The waste this rule
+      // was built for was repeated PRESSES on dead controls, not keys.
       try backend.pressKey(app: app, key: key, focusId: focusId)
       return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
     case "raise":
@@ -122,9 +134,14 @@ public final class Dispatcher {
       // One refusal per parked episode. A caller that means it, or a user who
       // asked to SEE the app, gets it on the second ask; un-parking re-arms it
       // for next time. This blocks the reflex, not the intent.
+      //
+      // The escape hatch is deliberately NOT mentioned in the message. An
+      // earlier version ended with "ask again and it will go through", and the
+      // model asked again five seconds later — measured. A refusal that
+      // explains how to get around it is a speed bump, not a refusal.
       if backend.unresponsiveHint(app: app) != nil {
         if refusedRaise.insert(app).inserted {
-          throw BridgeError.actionFailed("Raising \(app) will not fix a press that did nothing: the window re-parks as soon as focus moves on, so this costs the user their screen and changes nothing. Do the keyboard route instead — key \"down\", then key \"return\", in one call — or use a menu bar item. Ask for raise again if you genuinely need the app in front, and it will go through.")
+          throw BridgeError.actionFailed("Raising \(app) will not fix a press that did nothing: the window re-parks as soon as focus moves on, so this costs the user their screen and changes nothing. Do the keyboard route instead — key \"down\", then key \"return\", in one call — or use a menu bar item.")
         }
       } else {
         refusedRaise.remove(app)
@@ -167,8 +184,10 @@ public final class Dispatcher {
       let dy = (p["dy"] as? Int) ?? 0
       let dx = (p["dx"] as? Int) ?? 0
       guard dx != 0 || dy != 0 else { throw BridgeError.badParams("Pass a non-zero dx or dy. Negative dy scrolls down, positive up.") }
+      let scrollKey = Self.actionKey("scroll", id: id, detail: "\(dx),\(dy)")
+      try repeatCheck(app, scrollKey)
       try backend.scroll(app: app, id: id, dx: dx, dy: dy)
-      return try afterAction(app, p)
+      return try afterAction(app, p, actionKey: scrollKey)
     default:
       throw BridgeError.unknownMethod(method)
     }
@@ -209,7 +228,7 @@ public final class Dispatcher {
 
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
-  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil) throws -> Any {
+  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil) throws -> Any {
     // Snapshot AFTER the app has had a chance to react, not the instant the
     // action returns. Measured: pressing return in Maps' search field produced
     // "(no changes)" while the three results were on their way, and the model
@@ -275,7 +294,12 @@ public final class Dispatcher {
     }
     // Nothing moved: if the backend knows why this app ignores presses, say so
     // now, before the model retries the same control four different ways.
-    if diff == "(no changes)", let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
+    if diff == "(no changes)" {
+      if let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
+      if let actionKey { lastNoChange[app] = actionKey }
+    } else {
+      lastNoChange.removeValue(forKey: app)
+    }
     return out
   }
 
@@ -343,6 +367,31 @@ public final class Dispatcher {
     idMemory[app] = mem
   }
   static let idMemoryCap = 6_000
+
+  /// One action, as a string, so "the same thing again" is expressible.
+  private static func actionKey(_ verb: String, id: Int?, detail: String) -> String {
+    "\(verb)|\(id.map(String.init(describing:)) ?? "-")|\(detail)"
+  }
+
+  /// The same action, on the same element, after it was accepted and changed
+  /// nothing. Measured: one run pressed the same dead control twice in a row,
+  /// and others pressed one four different ways. Repeating an action that
+  /// demonstrably did nothing cannot do anything, so it is refused.
+  ///
+  /// Refused ONCE, then cleared, so an action the app has since become ready
+  /// for is not blocked forever — and, like the raise, the message does not
+  /// mention that.
+  ///
+  /// Two things this deliberately does NOT catch. An action that DID change
+  /// something, repeated: pressing a tab back and forth changes the tree every
+  /// time, so it is indistinguishable here from useful work, and that waste is
+  /// a question of scope rather than of mechanism. And keys, which are exempt
+  /// at the call site — see the "key" case.
+  private func repeatCheck(_ app: String, _ key: String) throws {
+    guard lastNoChange[app] == key else { return }
+    lastNoChange.removeValue(forKey: app)
+    throw BridgeError.actionFailed("You already sent this exact action and it was accepted without changing anything. Sending it again will do the same. Take a different path — the keyboard, or a menu bar item — or read the app to see what is actually there.")
+  }
 
   /// An action the element did not list is refused before it is tried. Run 4
   /// of the Maps task: the model pressed a tab button whose line showed no

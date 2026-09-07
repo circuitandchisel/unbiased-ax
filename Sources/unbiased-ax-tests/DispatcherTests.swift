@@ -647,3 +647,85 @@ func runParkedRaiseTests() {
     try expect(out.contains("will not fix"), "a new parked episode gets a fresh refusal: \(out)")
   }
 }
+
+func runRepeatTests() {
+  print("Refusing the same action that already did nothing")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+  let ok = 2 // the fake's OK button
+
+  // One run pressed the same dead control twice in a row; another pressed one
+  // control four different ways. Repeating an action that was accepted and
+  // changed nothing cannot do anything.
+
+  test("the same action again, after it changed nothing, is refused") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let first = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(first.contains("(no changes)"), first)
+    let second = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(second.contains("already sent this exact action"), second)
+    try expectEqual(b.acted.count, 1, "the repeat never reached the app")
+  }
+
+  test("the refusal does not say how to get around it") {
+    let b = FakeBackend()
+    b.parkedWindow = true
+    let d = Dispatcher(backend: b)
+    let raise = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(raise.contains("will not fix"), raise)
+    try expect(!raise.lowercased().contains("ask for raise again"), "an earlier version advertised the second ask and the model took it: \(raise)")
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    let repeated = call(d, #"{"id":4,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(!repeated.lowercased().contains("again and it will"), repeated)
+  }
+
+  test("a different action, or the same verb on a different element, goes through") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#) // nothing
+    let elsewhere = call(d, #"{"id":3,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x"}}"#)
+    try expect(!elsewhere.contains("already sent"), "a different element and verb is not the same action: \(elsewhere)")
+    let key = call(d, #"{"id":4,"method":"key","params":{"app":"Brave Browser","key":"return"}}"#)
+    try expect(!key.contains("already sent"), "keys are exempt: \(key)")
+  }
+
+  test("an action that changed something may be repeated as often as it keeps working") {
+    let b = FakeBackend()
+    b.snapshotsUntilChange = 1 // every look differs from the baseline
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let first = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(!first.contains("(no changes)"), first)
+    let again = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(!again.contains("already sent"), "pressing a tab back and forth is scope, not mechanism: \(again)")
+  }
+
+  // Keys are exempt on purpose. An app that does not expose its selection in
+  // the tree makes every arrow key look like a no-op, and refusing the second
+  // would break moving through a list — the path the parked-window advice
+  // sends callers down.
+  test("repeated keys are never blocked, even when the tree shows nothing") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    for i in 2...5 {
+      let out = call(d, #"{"id":\#(i),"method":"key","params":{"app":"Brave Browser","key":"down"}}"#)
+      try expect(out.contains("(no changes)"), "the fake shows nothing for a key: \(out)")
+      try expect(!out.contains("already sent"), "moving through a list must not be refused: \(out)")
+    }
+    try expectEqual(b.keys.count, 4)
+  }
+
+  test("asking a second time after the refusal goes through, quietly") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    _ = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#) // refused
+    let third = call(d, #"{"id":4,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(third.contains(#""ok":true"#), third)
+  }
+}
