@@ -116,7 +116,21 @@ public protocol Backend: AnyObject {
   /// `focusId` focuses that element first, so the key lands where the caller
   /// means it to. Without it the key goes wherever keyboard focus already is,
   /// which is how "space to play a video" typed spaces into an address bar.
-  func pressKey(app: String, key: String, focusId: Int?) throws
+  /// `modifiers` are held around the keystroke: command, shift, option,
+  /// control. Needed because a design tool's tools live behind one-letter
+  /// shortcuts with no element and often no menu equivalent.
+  func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws
+  /// Pointer input inside one element: a tap at each point, or one press-drag-
+  /// release through all of them when `hold` is set. Points are FRACTIONS of
+  /// the element's box, so no caller ever handles screen pixels or display
+  /// scaling. Returns the screen points used, so a caller can see where its
+  /// fractions landed.
+  ///
+  /// This is the one verb that needs the window really on screen. It is
+  /// hit-testing, exactly like a press, so a parked or off-Space window cannot
+  /// receive it — and a click aimed where the window is not would land on
+  /// whatever IS there, which is why it refuses instead of guessing.
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   func raise(app: String, windowId: Int?) throws
   /// A picture of one window, PNG, wherever the window is — another Space

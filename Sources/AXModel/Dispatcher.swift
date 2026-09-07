@@ -5,8 +5,22 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
+  public static let modifiers = ["command", "shift", "option", "control"]
+  /// How many points one pointer call may carry. A logo outline is a dozen; a
+  /// thousand would be a way to hold the desktop tools for a minute.
+  public static let maxPathPoints = 60
+
+  /// A named key, or one letter or digit. Letters matter because a design tool
+  /// puts its tools behind one-character shortcuts and exposes no element for
+  /// them at all: Figma's pen is `p` and nothing else, which is where two
+  /// separate agents stalled on the same task.
+  public static func keyAllowed(_ key: String) -> Bool {
+    if keys.contains(key) { return true }
+    guard key.count == 1, let c = key.unicodeScalars.first else { return false }
+    return (c >= "a" && c <= "z") || (c >= "0" && c <= "9")
+  }
 
   private let backend: Backend
   private var last: [String: Snapshot] = [:]
@@ -105,7 +119,10 @@ public final class Dispatcher {
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "key":
       let key = try string(p, "key").lowercased()
-      guard Self.keys.contains(key) else { throw BridgeError.badParams("Unknown key \"\(key)\". Keys: \(Self.keys.joined(separator: ", ")).") }
+      guard Self.keyAllowed(key) else {
+        throw BridgeError.badParams("Unknown key \"\(key)\". Use one letter (a-z), one digit, or a named key: \(Self.keys.joined(separator: ", ")).")
+      }
+      let mods = try modifierList(p)
       let asked = p["id"] as? Int
       let focusId = try asked.map { try resolveId(app, $0) }
       // Keys are exempt from repeatCheck. An app that does not expose its
@@ -113,7 +130,7 @@ public final class Dispatcher {
       // refusing the second one would break moving through a list — the very
       // path the parked-window advice sends callers down. The waste this rule
       // was built for was repeated PRESSES on dead controls, not keys.
-      try backend.pressKey(app: app, key: key, focusId: focusId)
+      try backend.pressKey(app: app, key: key, modifiers: mods, focusId: focusId)
       return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
     case "raise":
       // Measured over six runs: a press does nothing because the window is
@@ -178,6 +195,19 @@ public final class Dispatcher {
         // see them. Say what the blank means and what not to do about it.
         out["note"] = "This window is on another Space. Controls and text are in the picture; content the app draws only while on screen (map tiles, video, some web views) is blank. That is the picture's limit, not a reason to raise the app: the tree already carries the text, and a task that truly needs the blank part should be reported to the user, not solved by taking their screen."
       }
+      return out
+    case "pointer":
+      // Pointer input inside one element. The points are FRACTIONS of that
+      // element's box, never screen pixels: the comparison run spent several
+      // turns discovering a 2.8125 display scale factor and drawing outside
+      // the frame, and a fraction of a known box cannot go wrong that way.
+      // The result reports where each fraction actually landed.
+      let anchor = try resolveId(app, try int(p, "id"))
+      let path = try pathPoints(p)
+      let hold = (p["hold"] as? Bool) ?? false
+      let landed = try backend.pointer(app: app, id: anchor, path: path, hold: hold, modifiers: try modifierList(p))
+      var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
+      out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }
       return out
     case "scroll":
       let id = try resolveId(app, try int(p, "id"))
@@ -334,6 +364,37 @@ public final class Dispatcher {
   /// snapshot has exactly one element that matches. One match is the same
   /// control after a rebuild. Zero or several is a genuine miss, and refusing
   /// is right: acting on a guess is worse than another read.
+  private func modifierList(_ p: [String: Any]) throws -> [String] {
+    guard let raw = p["modifiers"] else { return [] }
+    guard let list = raw as? [String] else { throw BridgeError.badParams("modifiers must be a list of strings.") }
+    for m in list where !Self.modifiers.contains(m) {
+      throw BridgeError.badParams("Unknown modifier \"\(m)\". Modifiers: \(Self.modifiers.joined(separator: ", ")).")
+    }
+    return list
+  }
+
+  /// Fractions, validated. Anything outside 0-1 is refused with the reason,
+  /// because the alternative is a click landing somewhere nobody chose.
+  private func pathPoints(_ p: [String: Any]) throws -> [(x: Double, y: Double)] {
+    guard let raw = p["path"] as? [[String: Any]], !raw.isEmpty else {
+      throw BridgeError.badParams("Pass path: a list of {x, y} points, each a FRACTION 0-1 of the anchor element's box. [{\"x\":0.5,\"y\":0.5}] is its centre.")
+    }
+    guard raw.count <= Self.maxPathPoints else {
+      throw BridgeError.badParams("\(raw.count) points is too many (max \(Self.maxPathPoints)).")
+    }
+    var out: [(x: Double, y: Double)] = []
+    for (i, pt) in raw.enumerated() {
+      let x = (pt["x"] as? Double) ?? (pt["x"] as? Int).map(Double.init)
+      let y = (pt["y"] as? Double) ?? (pt["y"] as? Int).map(Double.init)
+      guard let x, let y else { throw BridgeError.badParams("point \(i + 1) needs numeric x and y.") }
+      guard x >= 0, x <= 1, y >= 0, y <= 1 else {
+        throw BridgeError.badParams("point \(i + 1) is (\(x), \(y)). x and y are FRACTIONS of the anchor element's box, so both must be between 0 and 1.")
+      }
+      out.append((x, y))
+    }
+    return out
+  }
+
   private func resolveId(_ app: String, _ id: Int) throws -> Int {
     guard let snap = last[app] else { throw BridgeError.noSuchElement(id) }
     if snap.nodes.contains(where: { $0.id == id }) { return id }

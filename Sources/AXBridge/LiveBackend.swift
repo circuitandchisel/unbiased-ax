@@ -236,7 +236,34 @@ public final class LiveBackend: Backend {
     "return": 36, "tab": 48, "escape": 53, "space": 49, "delete": 51, "up": 126, "down": 125, "left": 123, "right": 124,
   ]
 
-  public func pressKey(app: String, key: String, focusId: Int?) throws {
+  /// Letters and digits on a US layout. Virtual key codes are positions on the
+  /// keyboard rather than characters, so these are the US positions; a layout
+  /// that moves them would send the wrong character. Accepted deliberately:
+  /// the reason letters exist here is app SHORTCUTS, which are matched by
+  /// position too, so `p` selects Figma's pen on any layout where `p` is where
+  /// US keyboards put it.
+  static let letterCodes: [String: CGKeyCode] = [
+    "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34, "j": 38, "k": 40,
+    "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15, "s": 1, "t": 17, "u": 32,
+    "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
+    "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+  ]
+
+  static func flags(for modifiers: [String]) -> CGEventFlags {
+    var f: CGEventFlags = []
+    for m in modifiers {
+      switch m {
+      case "command": f.insert(.maskCommand)
+      case "shift": f.insert(.maskShift)
+      case "option": f.insert(.maskAlternate)
+      case "control": f.insert(.maskControl)
+      default: break
+      }
+    }
+    return f
+  }
+
+  public func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws {
     let a = try resolve(app)
     // Focus first when the caller named a target: a key event goes to whatever
     // holds keyboard focus, and "space to play" in an omnibox types a space.
@@ -244,15 +271,87 @@ public final class LiveBackend: Backend {
       let (_, el) = try element(app, id)
       AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
     }
-    guard let code = Self.keyCodes[key] else { throw BridgeError.badParams("Unknown key \"\(key)\".") }
+    guard let code = Self.keyCodes[key] ?? Self.letterCodes[key] else {
+      throw BridgeError.badParams("Unknown key \"\(key)\".")
+    }
     // Posted to the pid, not the system: it reaches the app whether or not it
     // is frontmost, and cannot land in some other window by accident.
     guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
           let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
       throw BridgeError.actionFailed("could not create key event")
     }
+    let f = Self.flags(for: modifiers)
+    if !f.isEmpty {
+      down.flags = f
+      up.flags = f
+    }
     down.postToPid(a.processIdentifier)
     up.postToPid(a.processIdentifier)
+  }
+
+  /// Pointer input inside one element. See the protocol for why the caller
+  /// passes fractions rather than pixels.
+  ///
+  /// Posted GLOBALLY, not to the pid, and that is the whole reason this verb
+  /// has a visibility requirement. Measured: mouse events posted to a process
+  /// do nothing to a canvas — the app hit-tests them against what is actually
+  /// on screen. So the events go to the HID tap at real screen coordinates,
+  /// which means the window has to be where those coordinates are. A parked or
+  /// off-Space window is refused rather than clicked at blindly, because the
+  /// click would land on whatever is at that spot instead.
+  public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint] {
+    let a = try resolve(app)
+    let (_, el) = try element(app, id)
+    guard let frame = Self.frame(of: el) else {
+      throw BridgeError.actionFailed("element \(id) does not report a position and size, so there is nothing to aim inside")
+    }
+    guard frame.width > 1, frame.height > 1 else {
+      throw BridgeError.actionFailed("element \(id) is \(Int(frame.width))x\(Int(frame.height)); too small to aim inside")
+    }
+    if let parked = parkedWindow(app: app) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app)'s window is parked by Stage Manager at \(parked.actual.w)x\(parked.actual.h), so it is not where these coordinates are on screen and a click would land on whatever is. Pointer input is the one thing that needs the window really visible: raise the app first, and say so to the user, or do this with the keyboard and menus instead.")
+    }
+    if let wins = try? windows(app: app), wins.allSatisfy({ !$0.onSpace }) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) has no window on this Space, so a click at these coordinates would land on another app. Raise it first, or use the keyboard and menus.")
+    }
+    let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
+    let f = Self.flags(for: modifiers)
+    func post(_ type: CGEventType, _ at: CGPoint) {
+      guard let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: .left) else { return }
+      ev.setIntegerValueField(.mouseEventClickState, value: 1)
+      if !f.isEmpty { ev.flags = f }
+      ev.post(tap: .cghidEventTap)
+      usleep(Self.pointerStepUs)
+    }
+    if hold, points.count > 1 {
+      post(.mouseMoved, points[0])
+      post(.leftMouseDown, points[0])
+      for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
+      post(.leftMouseUp, points[points.count - 1])
+    } else {
+      for pt in points {
+        post(.mouseMoved, pt)
+        post(.leftMouseDown, pt)
+        post(.leftMouseUp, pt)
+      }
+    }
+    return points
+  }
+
+  /// Between events. Apps that build a path from clicks drop points sent
+  /// faster than they redraw; measured at 70ms in the comparison run.
+  static let pointerStepUs: UInt32 = 70_000
+
+  static func frame(of el: AXElement) -> CGRect? {
+    var posRef: CFTypeRef?
+    var sizeRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, kAXPositionAttribute as CFString, &posRef) == .success,
+          AXUIElementCopyAttributeValue(el.ref, kAXSizeAttribute as CFString, &sizeRef) == .success,
+          let posVal = posRef as! AXValue?, let sizeVal = sizeRef as! AXValue? else { return nil }
+    var origin = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(posVal, .cgPoint, &origin), AXValueGetValue(sizeVal, .cgSize, &size) else { return nil }
+    return CGRect(origin: origin, size: size)
   }
 
   /// Launch by name or bundle id, then wait until the app is actually readable

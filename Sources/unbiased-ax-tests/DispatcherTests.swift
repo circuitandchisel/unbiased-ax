@@ -72,9 +72,21 @@ final class FakeBackend: Backend {
     return d
   }
   var focused: [(app: String, id: Int)] = []
-  func pressKey(app: String, key: String, focusId: Int?) throws {
+  var keyMods: [[String]] = []
+  func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws {
     if let id = focusId { focused.append((app, id)) }
     keys.append((app, key))
+    keyMods.append(modifiers)
+  }
+  /// What the dispatcher asked for, and what it will be told landed. The frame
+  /// is fixed at 0,0 200x100 so a fraction maps to an obvious number.
+  var pointerCalls: [(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String])] = []
+  var pointerFails: String? = nil
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint] {
+    if let why = pointerFails { throw BridgeError.actionFailed(why) }
+    guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
+    pointerCalls.append((app, id, path, hold, modifiers))
+    return path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
   }
   var keepFrontSeen: [Bool] = []
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
@@ -727,5 +739,101 @@ func runRepeatTests() {
     _ = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#) // refused
     let third = call(d, #"{"id":4,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
     try expect(third.contains(#""ok":true"#), third)
+  }
+}
+
+func runKeyAndPointerTests() {
+  print("Letters, modifiers, and pointer input")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+  let canvas = 3 // the fake's text field; any element with a box will do
+
+  // Figma's pen tool is `p` and has no element at all. Two separate agents
+  // stalled on exactly that, and our own key verb accepted nine named keys.
+
+  test("a single letter is a key, and a word is not") {
+    try expect(Dispatcher.keyAllowed("p"))
+    try expect(Dispatcher.keyAllowed("7"))
+    try expect(Dispatcher.keyAllowed("return"))
+    try expect(!Dispatcher.keyAllowed("pen"))
+    try expect(!Dispatcher.keyAllowed(""))
+    try expect(!Dispatcher.keyAllowed("P"), "the dispatcher lowercases before asking")
+  }
+
+  test("a letter reaches the backend, and an unknown key says what is allowed") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let ok = call(d, #"{"id":1,"method":"key","params":{"app":"Brave Browser","key":"P"}}"#)
+    try expect(ok.contains(#""ok":true"#), ok)
+    try expectEqual(b.keys.last?.key, "p", "lowercased on the way through")
+    let bad = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"pen"}}"#)
+    try expect(bad.contains("one letter") && bad.contains("bad_params"), bad)
+  }
+
+  test("modifiers are passed through, and an unknown one is refused by name") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"key","params":{"app":"Brave Browser","key":"z","modifiers":["command","shift"]}}"#)
+    try expectEqual(b.keyMods.last ?? [], ["command", "shift"])
+    let bad = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"z","modifiers":["meta"]}}"#)
+    try expect(bad.contains("Unknown modifier") && bad.contains("meta"), bad)
+    try expectEqual(b.keyMods.count, 1, "the bad call never reached the backend")
+  }
+
+  // The comparison run spent turns discovering a 2.8125 display scale factor
+  // and drawing outside the frame. Fractions of a known box cannot do that.
+
+  test("pointer takes fractions of the anchor's box and reports where they landed") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[{"x":0,"y":0},{"x":0.5,"y":1}]}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    // The fake's box is 200x100, so 0.5,1 is 100,100.
+    try expect(out.contains(#"{"x":0,"y":0}"#) && out.contains(#"{"x":100,"y":100}"#), "it must say where the fractions landed: \(out)")
+    try expectEqual(b.pointerCalls.count, 1)
+    try expectEqual(b.pointerCalls.first?.hold, false, "taps unless asked to hold")
+  }
+
+  test("hold is one drag, and modifiers ride along") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[{"x":0.1,"y":0.1},{"x":0.9,"y":0.9}],"hold":true,"modifiers":["shift"]}}"#)
+    try expectEqual(b.pointerCalls.first?.hold, true)
+    try expectEqual(b.pointerCalls.first?.modifiers ?? [], ["shift"])
+  }
+
+  test("a point outside the box is refused, saying they are fractions") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    for bad in [#"[{"x":430,"y":205}]"#, #"[{"x":0.5,"y":-0.1}]"#, #"[{"x":1.5,"y":0.5}]"#] {
+      let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":\#(bad)}}"#)
+      try expect(out.contains("FRACTIONS") && out.contains("bad_params"), "\(bad) -> \(out)")
+    }
+    try expectEqual(b.pointerCalls.count, 0, "nothing reached the app")
+  }
+
+  test("an empty path, a malformed point, and too many points are each refused") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let empty = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[]}}"#)
+    try expect(empty.contains("list of {x, y} points"), empty)
+    let junk = call(d, #"{"id":3,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[{"x":0.5}]}}"#)
+    try expect(junk.contains("numeric x and y"), junk)
+    let many = "[" + Array(repeating: #"{"x":0.5,"y":0.5}"#, count: Dispatcher.maxPathPoints + 1).joined(separator: ",") + "]"
+    let over = call(d, #"{"id":4,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":\#(many)}}"#)
+    try expect(over.contains("too many"), over)
+    try expectEqual(b.pointerCalls.count, 0)
+  }
+
+  test("a stale anchor is re-found, and the backend's refusal reaches the caller") {
+    let b = FakeBackend()
+    b.pointerFails = "the window is parked by Stage Manager"
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":\#(canvas),"path":[{"x":0.5,"y":0.5}]}}"#)
+    try expect(out.contains("parked by Stage Manager") && out.contains("action_failed"), out)
   }
 }

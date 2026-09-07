@@ -18,6 +18,7 @@ runRefindTests()
 runUnresponsiveHintTests()
 runParkedRaiseTests()
 runRepeatTests()
+runKeyAndPointerTests()
 runServerTests()
 
 finish()
