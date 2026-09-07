@@ -98,6 +98,20 @@ public enum WindowCapture {
   /// then does the one capture and exits.
   public static func isHelperInvocation(_ args: [String]) -> Bool { args.count >= 3 && args[1] == flag }
 
+  /// What a ScreenCaptureKit failure actually means, by code. Anything
+  /// unrecognised keeps its domain and code in the text, so the next surprise
+  /// is diagnosable from the message instead of from a rebuilt probe.
+  static func describe(_ ns: NSError) -> String {
+    switch ns.code {
+    case -3801:
+      return "Screen Recording is not granted for this app. Allow it in System Settings > Privacy & Security > Screen Recording, then try again."
+    case -3811:
+      return "This window fills the display and cannot be photographed while it is off screen; macOS keeps no full-size surface for it. Screen Recording is not the problem. Either raise the app and take a display screenshot instead, or work from the tree, which is complete either way."
+    default:
+      return "window capture failed: \(ns.localizedDescription) (\(ns.domain) \(ns.code))"
+    }
+  }
+
   /// Writes one JSON object to stdout: {image (base64 JPEG), width, height}
   /// or {error}. Never returns.
   public static func helperMain(_ args: [String]) -> Never {
@@ -137,11 +151,19 @@ public enum WindowCapture {
         }
         result = ["image": jpeg.base64EncodedString(), "width": img.width, "height": img.height, "blank": isBlank(rep)]
       } catch {
+        // Distinguish the codes. An earlier version reported EVERY
+        // ScreenCaptureKit error as a missing Screen Recording grant, and that
+        // cost real time: a -3811 on Figma sent the user to System Settings,
+        // where the permission was already granted, and left the model
+        // believing it had no visual channel at all for a whole task.
+        //
+        // Measured: -3811 is what a window that FILLS THE DISPLAY returns
+        // while it is off screen. The same window captures at any size once it
+        // is on screen, and a smaller off-screen window (1024x768) captures
+        // fine — so it is the full-display-size-while-hidden combination, not
+        // the size and not the permission.
         let ns = error as NSError
-        // SCStreamErrorDomain -3801 is the user having declined Screen Recording.
-        result = ["error": ns.domain.contains("SCStream") || ns.code == -3801
-          ? "Screen Recording is not granted for this app. Allow it in System Settings > Privacy & Security > Screen Recording, then try again."
-          : "window capture failed: \(error.localizedDescription)"]
+        result = ["error": Self.describe(ns)]
       }
       done.signal()
     }
