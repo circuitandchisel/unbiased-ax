@@ -12,9 +12,16 @@ public struct WindowInfo: Codable, Equatable {
   /// False for a window on another Space. Such a window IS in the tree and
   /// takes actions like any other; the flag only tells the model where it is.
   public var onSpace: Bool
-  public init(id: Int, title: String, x: Int, y: Int, width: Int, height: Int, minimized: Bool, focused: Bool, onSpace: Bool = true) {
+  /// The window server has shrunk this window's surface to a thumbnail, which
+  /// is what Stage Manager does to every app the user is not looking at. Reads
+  /// are unaffected, and so are keys and menu items, but the window no longer
+  /// hit-tests: a press on a row, a card button or a tab is accepted and does
+  /// nothing. Rendered as `[parked]`, so it is visible before anything is
+  /// tried rather than only after something fails.
+  public var parked: Bool
+  public init(id: Int, title: String, x: Int, y: Int, width: Int, height: Int, minimized: Bool, focused: Bool, onSpace: Bool = true, parked: Bool = false) {
     self.id = id; self.title = title; self.x = x; self.y = y; self.width = width; self.height = height
-    self.minimized = minimized; self.focused = focused; self.onSpace = onSpace
+    self.minimized = minimized; self.focused = focused; self.onSpace = onSpace; self.parked = parked
   }
   /// `1 "YouTube - Brave" @0,0 1200x800 [focused]` — the model reads windows the
   /// same way it reads elements.
@@ -22,6 +29,7 @@ public struct WindowInfo: Codable, Equatable {
     var parts = ["\(id) \"\(title)\" @\(x),\(y) \(width)x\(height)"]
     if focused { parts.append("[focused]") }
     if minimized { parts.append("[minimized]") }
+    if parked { parts.append("[parked]") }
     if !onSpace { parts.append("[other Space]") }
     return parts.joined(separator: " ")
   }

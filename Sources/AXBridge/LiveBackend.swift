@@ -90,6 +90,9 @@ public final class LiveBackend: Backend {
     let src = LiveSource()
     var reg = registries[a.processIdentifier] ?? IdRegistry()
     var out: [WindowInfo] = []
+    // One window-server listing for the whole loop: the parked check is a
+    // comparison against it, and asking per window would be N scans.
+    let surfaces = Self.surfaceSizes()
     // parenthesised: a trailing closure in a for-in sequence draws a confusable-with-body warning
     for (el, onSpace) in (here.map { ($0, true) } + elsewhere.map { ($0, false) }) {
       guard let at = src.attributes(of: el) else { continue }
@@ -98,7 +101,8 @@ public final class LiveBackend: Backend {
       let id = reg.id(for: el)
       elements[a.processIdentifier, default: [:]][id] = el
       out.append(WindowInfo(id: id, title: at.title ?? "", x: at.x, y: at.y, width: at.width, height: at.height,
-                            minimized: (minimized as? Bool) ?? false, focused: at.focused, onSpace: onSpace))
+                            minimized: (minimized as? Bool) ?? false, focused: at.focused, onSpace: onSpace,
+                            parked: Self.isParked(el, width: at.width, height: at.height, in: surfaces)))
     }
     registries[a.processIdentifier] = reg
     return out
@@ -319,7 +323,7 @@ public final class LiveBackend: Backend {
   /// the app is in front, re-parks it the moment focus moves on, and takes
   /// the user's screen to do it — the exact thing this bridge exists to avoid.
   public func unresponsiveHint(app: String) -> String? {
-    guard let a = try? resolve(app), let shrunk = shrunkSurface(app: app, pid: a.processIdentifier) else { return nil }
+    guard let a = try? resolve(app), let shrunk = parkedWindow(app: app) else { return nil }
     let name = a.localizedName ?? app
     let sizes = "\(shrunk.actual.w)x\(shrunk.actual.h), though the tree describes it at \(shrunk.expected.w)x\(shrunk.expected.h)"
     guard Self.stageManagerOn() else {
@@ -334,27 +338,35 @@ public final class LiveBackend: Backend {
     (CFPreferencesCopyAppValue("GloballyEnabled" as CFString, "com.apple.WindowManager" as CFString) as? Bool) ?? false
   }
 
-  /// The window's Accessibility size against the surface the window server
-  /// reports, when the latter is dramatically smaller. Nil when they agree.
-  ///
-  /// Built on `windows(app:)` rather than AXWindows: the windows this matters
-  /// for are precisely the ones AXWindows does not list — parked by Stage
-  /// Manager, or on another Space — and an earlier version that read
-  /// AXWindows directly found nothing in exactly the case it was written for.
-  func shrunkSurface(app: String, pid: pid_t) -> (expected: (w: Int, h: Int), actual: (w: Int, h: Int))? {
-    guard let wins = try? windows(app: app) else { return nil }
-    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
-    for win in wins where win.width > 200 && win.height > 200 && !win.minimized {
-      guard let el = elements[pid]?[win.id], let wid = RemoteToken.windowId(of: el.ref) else { continue }
-      for w in list where CGWindowID((w[kCGWindowNumber as String] as? Int) ?? 0) == wid {
-        guard let b = w[kCGWindowBounds as String] as? [String: Any],
-              let aw = b["Width"] as? Double, let ah = b["Height"] as? Double else { continue }
-        // Half the expected extent in both directions is not a resize, it is a
-        // thumbnail: the measured case was 108x104 against 1024x768.
-        if aw < Double(win.width) / 2 && ah < Double(win.height) / 2 {
-          return ((win.width, win.height), (Int(aw), Int(ah)))
-        }
-      }
+  /// Window-server id -> the size of the surface it is actually showing.
+  static func surfaceSizes() -> [CGWindowID: CGSize] {
+    var out: [CGWindowID: CGSize] = [:]
+    for w in (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? [] {
+      guard let n = w[kCGWindowNumber as String] as? Int,
+            let b = w[kCGWindowBounds as String] as? [String: Any],
+            let width = b["Width"] as? Double, let height = b["Height"] as? Double else { continue }
+      out[CGWindowID(n)] = CGSize(width: width, height: height)
+    }
+    return out
+  }
+
+  /// Half the described extent in BOTH directions is not a resize, it is a
+  /// thumbnail: the measured case was 108x104 against 1024x768. Windows too
+  /// small to say anything about are left alone.
+  static func isParked(_ el: AXElement, width: Int, height: Int, in surfaces: [CGWindowID: CGSize]) -> Bool {
+    guard width > 200, height > 200, let wid = RemoteToken.windowId(of: el.ref), let actual = surfaces[wid] else { return false }
+    return actual.width < Double(width) / 2 && actual.height < Double(height) / 2
+  }
+
+  /// The first parked window of an app, with the sizes, for the message that
+  /// explains why a press did nothing.
+  func parkedWindow(app: String) -> (expected: (w: Int, h: Int), actual: (w: Int, h: Int))? {
+    guard let wins = try? windows(app: app), let a = try? resolve(app) else { return nil }
+    let surfaces = Self.surfaceSizes()
+    for win in wins where win.parked && !win.minimized {
+      guard let el = elements[a.processIdentifier]?[win.id], let wid = RemoteToken.windowId(of: el.ref),
+            let actual = surfaces[wid] else { continue }
+      return ((win.width, win.height), (Int(actual.width), Int(actual.height)))
     }
     return nil
   }

@@ -16,6 +16,7 @@ runScreenshotTests()
 runRefusedActionTests()
 runRefindTests()
 runUnresponsiveHintTests()
+runParkedRaiseTests()
 runServerTests()
 
 finish()
