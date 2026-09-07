@@ -97,7 +97,7 @@ final class FakeBackend: Backend {
   /// is a thumbnail, so presses on it do nothing.
   var parkedWindow = false
   var unresponsiveWhy: String? = nil
-  func unresponsiveHint(app: String) -> String? { unresponsiveWhy }
+  func unresponsiveHint(app: String) -> String? { unresponsiveWhy ?? (parkedWindow ? "Stage Manager has parked it" : nil) }
   var blankShot = false
   func screenshot(app: String, windowId: Int?) throws -> WindowShot {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
@@ -585,59 +585,65 @@ func runParkedRaiseTests() {
     try expect(out.contains(#""parked":true"#), out)
   }
 
-  // Three runs in a row: a press does nothing because the window is parked,
-  // and the model raises to fix it. The hint, the tool description and the
-  // skill all said not to. So it is refused rather than described.
+  // Six runs: a press does nothing because the window is parked, and the model
+  // raises to fix it. The hint, the tool description and the skill all said
+  // not to. So it is refused rather than described.
 
-  test("after a press that did nothing on a parked window, the next raise is refused") {
+  test("while the window is parked, the first raise is refused and names the route that works") {
     let b = FakeBackend()
     b.parkedWindow = true
-    b.unresponsiveWhy = "Stage Manager has parked it"
     let d = Dispatcher(backend: b)
-    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
-    let dead = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
-    try expect(dead.contains("(no changes)"), dead)
-    let refused = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":2,"action":"raise"}}"#)
-    _ = refused // acting on an element is not the raise method; the method is what is gated
-    let out = call(d, #"{"id":4,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains("will not fix a press that did nothing"), out)
-    try expect(out.contains("key"), "the refusal must name what to do instead: \(out)")
+    try expect(out.contains("down") && out.contains("return"), "the refusal must name what to do instead: \(out)")
     try expectEqual(b.raised.count, 0, "nothing was raised")
   }
 
   test("asking a second time goes through, so intent is not blocked — only the reflex") {
     let b = FakeBackend()
     b.parkedWindow = true
-    b.unresponsiveWhy = "Stage Manager has parked it"
     let d = Dispatcher(backend: b)
-    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
-    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
-    _ = call(d, #"{"id":3,"method":"raise","params":{"app":"Brave Browser"}}"#) // refused
-    let out = call(d, #"{"id":4,"method":"raise","params":{"app":"Brave Browser"}}"#)
-    try expect(out.contains(#""ok":true"#), out)
-    try expectEqual(b.raised.count, 1)
-  }
-
-  test("a raise with no dead press behind it is never touched") {
-    let b = FakeBackend()
-    b.parkedWindow = true
-    let d = Dispatcher(backend: b)
-    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#) // refused
     let out = call(d, #"{"id":2,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains(#""ok":true"#), out)
     try expectEqual(b.raised.count, 1)
   }
 
-  test("an action that DID something clears it, so a later raise is not punished for old history") {
+  test("a window that is not parked is never touched") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.raised.count, 1)
+  }
+
+  // The rule this replaces armed on a dead action and disarmed on a successful
+  // one, so the keyboard workaround — the very thing the refusal recommends —
+  // switched the guard off at the moment it worked, and the reflex raise went
+  // through five seconds later. Measured on 2026-09-06.
+
+  test("succeeding at the keyboard route does not disarm the refusal") {
     let b = FakeBackend()
     b.parkedWindow = true
-    b.unresponsiveWhy = "Stage Manager has parked it"
+    b.snapshotsUntilChange = 1 // the next action changes the tree
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
-    _ = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#) // dead
-    b.snapshotsUntilChange = 1
-    _ = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#) // this one worked
-    let out = call(d, #"{"id":4,"method":"raise","params":{"app":"Brave Browser"}}"#)
-    try expect(out.contains(#""ok":true"#), out)
+    let worked = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"return"}}"#)
+    try expect(!worked.contains("(no changes)"), "the keyboard worked: \(worked)")
+    let out = call(d, #"{"id":3,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains("will not fix"), "still parked, so the reflex is still refused: \(out)")
+  }
+
+  test("un-parking re-arms it, so the next episode gets its own refusal") {
+    let b = FakeBackend()
+    b.parkedWindow = true
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#) // refused, armed
+    b.parkedWindow = false
+    let allowed = call(d, #"{"id":2,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(allowed.contains(#""ok":true"#), allowed)
+    b.parkedWindow = true
+    let out = call(d, #"{"id":3,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains("will not fix"), "a new parked episode gets a fresh refusal: \(out)")
   }
 }

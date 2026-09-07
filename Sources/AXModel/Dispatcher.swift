@@ -12,10 +12,10 @@ public final class Dispatcher {
   private var last: [String: Snapshot] = [:]
   /// See remember(_:_:) — id -> what that id described, per app.
   private var idMemory: [String: [Int: Attributes]] = [:]
-  /// Apps whose last action was accepted, changed nothing, and had a reason:
-  /// the window is parked. The next raise for such an app is refused once —
-  /// see the "raise" case.
-  private var deadOnParked: Set<String> = []
+  /// Apps whose raise we have already declined during the CURRENT parked
+  /// episode. Cleared the moment the window is seen un-parked, so each new
+  /// episode gets one refusal — see the "raise" case.
+  private var refusedRaise: Set<String> = []
 
   public init(backend: Backend) { self.backend = backend }
 
@@ -104,19 +104,30 @@ public final class Dispatcher {
       try backend.pressKey(app: app, key: key, focusId: focusId)
       return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
     case "raise":
-      // Measured three runs in a row: a press does nothing because the window
-      // is parked, and the caller raises to fix it. That cannot work. Raising
+      // Measured over six runs: a press does nothing because the window is
+      // parked, and the caller raises to fix it. That cannot work. Raising
       // un-parks the window only while the app is in front, and it re-parks
-      // the moment focus moves on, so the user loses their screen and the next
-      // press is dead again. Guidance did not stop it — the hint, this tool's
-      // own description and the bundled skill all said so, and it raised
-      // anyway — so the reflex is refused rather than described.
+      // the moment focus moves on — one run raised, and eleven seconds later
+      // the next press was dead again with the same hint. Guidance did not
+      // stop it: the hint, this tool's own description and the bundled skill
+      // all said so. So the reflex is refused rather than described.
       //
-      // Once, and only once. A caller that means it, or a user who asked to
-      // SEE the app, gets it on the second ask. This blocks the reflex, not
-      // the intent.
-      if deadOnParked.remove(app) != nil {
-        throw BridgeError.actionFailed("Raising \(app) will not fix a press that did nothing: the window re-parks as soon as focus moves on, so this costs the user their screen and changes nothing. Do the keyboard route instead — key \"down\", then key \"return\" — or use a menu bar item. Ask for raise again if you genuinely need the app in front, and it will go through.")
+      // The decision is the window's state NOW, not what the last action did.
+      // An earlier version armed on a dead action and disarmed on a
+      // successful one, which meant the keyboard workaround — the very thing
+      // the refusal recommends — switched the guard off at the moment it
+      // worked, and the reflex raise went straight through five seconds
+      // later. Measured.
+      //
+      // One refusal per parked episode. A caller that means it, or a user who
+      // asked to SEE the app, gets it on the second ask; un-parking re-arms it
+      // for next time. This blocks the reflex, not the intent.
+      if backend.unresponsiveHint(app: app) != nil {
+        if refusedRaise.insert(app).inserted {
+          throw BridgeError.actionFailed("Raising \(app) will not fix a press that did nothing: the window re-parks as soon as focus moves on, so this costs the user their screen and changes nothing. Do the keyboard route instead — key \"down\", then key \"return\", in one call — or use a menu bar item. Ask for raise again if you genuinely need the app in front, and it will go through.")
+        }
+      } else {
+        refusedRaise.remove(app)
       }
       try backend.raise(app: app, windowId: p["window"] as? Int)
       return try afterAction(app, p)
@@ -264,12 +275,7 @@ public final class Dispatcher {
     }
     // Nothing moved: if the backend knows why this app ignores presses, say so
     // now, before the model retries the same control four different ways.
-    if diff == "(no changes)", let why = backend.unresponsiveHint(app: app) {
-      out["hint"] = why
-      deadOnParked.insert(app)
-    } else if diff != "(no changes)" {
-      deadOnParked.remove(app)
-    }
+    if diff == "(no changes)", let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
     return out
   }
 
