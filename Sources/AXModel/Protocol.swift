@@ -132,6 +132,12 @@ public protocol Backend: AnyObject {
   /// whatever IS there, which is why it refuses instead of guessing.
   func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
+  /// The element's value as it stands now, for reading a `setValue` back. One
+  /// attribute read, no tree walk — cheap enough to check every write, which
+  /// is the point: measured in Figma, a field whose old text was not cleared
+  /// turned a `180` into `120180`, and seventeen later actions were computed
+  /// on top of the wrong number. nil when the element exposes no value.
+  func value(app: String, id: Int) throws -> String?
   func raise(app: String, windowId: Int?) throws
   /// A picture of one window, PNG, wherever the window is — another Space
   /// included — without raising anything. Measured 2026-09-05: Maps' window

@@ -518,6 +518,19 @@ public final class LiveBackend: Backend {
     guard err == .success else { throw BridgeError.actionFailed("setValue failed (AXError \(err.rawValue)); the element may be read-only") }
   }
 
+  public func value(app: String, id: Int) throws -> String? {
+    let (_, el) = try element(app, id)
+    var out: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, kAXValueAttribute as CFString, &out) == .success,
+          let v = out else { return nil }
+    // Same three shapes LiveSource.attributes reads a value in, and an AXValue
+    // placeholder means the element has no value at all.
+    if CFGetTypeID(v) == AXValueGetTypeID() { return nil }
+    if let str = v as? String { return str }
+    if let n = v as? NSNumber { return n.stringValue }
+    return nil
+  }
+
   public func screenshot(app: String, windowId: Int?) throws -> WindowShot {
     let a = try resolve(app)
     let wins = try windows(app: app)

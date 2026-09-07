@@ -21,6 +21,7 @@ runRepeatTests()
 runKeyAndPointerTests()
 runFigmaCostTests()
 runSettleFlagTests()
+runVerifyTests()
 runServerTests()
 
 finish()

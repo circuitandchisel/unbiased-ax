@@ -122,6 +122,10 @@ public final class Dispatcher {
       let key = Self.actionKey("setValue", id: id, detail: value)
       try repeatCheck(app, key)
       try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? false)
+      // Read it back unless told not to. This throws BEFORE afterAction, so the
+      // diff baseline is left where it was and the next read still shows what
+      // the bad write did.
+      if (p["verify"] as? Bool) ?? true { try verifyValue(app, id: id, wanted: value) }
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "key":
       let key = try string(p, "key").lowercased()
@@ -476,6 +480,54 @@ public final class Dispatcher {
   /// time, so it is indistinguishable here from useful work, and that waste is
   /// a question of scope rather than of mechanism. And keys, which are exempt
   /// at the call site — see the "key" case.
+  /// Tolerance for a numeric read-back, absolute and relative. A field that
+  /// ROUNDS what it was given is working correctly: Figma shows 160.31 for a
+  /// 160.3125 it stored exactly, and demanding equality there would refuse
+  /// every fractional coordinate.
+  static let verifyAbs = 0.05
+  static let verifyRel = 0.001
+
+  /// Prove the write landed, or say what is there instead. Deliberately
+  /// one-sided: it fails only on evidence, never on a value it cannot compare.
+  /// Two kinds of evidence, both measured in Figma:
+  ///
+  /// - Both sides are numbers and differ beyond rounding. Setting 180 on a
+  ///   field still holding 120 produced 120180 — twice in one task — and the
+  ///   seventeen coordinates computed after it were all wrong.
+  /// - The value is what was asked for with the OLD text still glued to it,
+  ///   even when the result is not a number.
+  ///
+  /// Anything else passes: a field that normalises "100" to "100%", reformats
+  /// a date, or exposes no value at all is not a failure, and a guard that
+  /// stops on those would be worse than no guard.
+  func verifyValue(_ app: String, id: Int, wanted: String) throws {
+    guard let actual = try backend.value(app: app, id: id), actual != wanted else { return }
+    let w = wanted.trimmingCharacters(in: .whitespaces)
+    let a = actual.trimmingCharacters(in: .whitespaces)
+    if a == w { return }
+    func fail(_ why: String) throws -> Never {
+      throw BridgeError.actionFailed(
+        "setValue did not land: asked for \"\(wanted)\", the field now reads \"\(actual)\" (\(why)). "
+        + "Nothing after this was run. Select the old text before typing: "
+        + "computer_do {\"app\":\"\(app)\",\"steps\":[{\"do\":\"key\",\"key\":\"a\",\"modifiers\":[\"command\"],\"id\":\(id)},{\"do\":\"key\",\"key\":\"delete\"},{\"do\":\"set_value\",\"id\":\(id),\"text\":\"\(wanted)\"}]}")
+    }
+    if let wn = Double(w), let an = Double(a) {
+      let slack = max(Self.verifyAbs, abs(wn) * Self.verifyRel)
+      if abs(wn - an) > slack { try fail("off by \(abs(wn - an)), beyond rounding") }
+      return
+    }
+    // The append signature without numbers: the old content is still in FRONT
+    // of what was just written, which is where an uncleared field leaves it —
+    // the caret sits at the end, so the new text lands after the old.
+    //
+    // Only that direction. A value ENDING in extra characters is how a field
+    // reports its own formatting: "100" comes back "100%", "12" comes back
+    // "12px". An earlier version of this check also matched a longer value
+    // that merely started with what was asked for, and refused every one of
+    // those — caught by the normalisation test below, not by a live run.
+    if a.count > w.count, a.hasSuffix(w) { try fail("the old text was not replaced") }
+  }
+
   private func repeatCheck(_ app: String, _ key: String) throws {
     guard lastNoChange[app] == key else { return }
     lastNoChange.removeValue(forKey: app)

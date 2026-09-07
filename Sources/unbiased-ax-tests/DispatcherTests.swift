@@ -96,8 +96,22 @@ final class FakeBackend: Backend {
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
     keepFrontSeen.append(keepFront); acted.append((app, id, action))
   }
+  /// What the field holds now. The fake echoes a write back, so verification
+  /// passes by default and only a test that ASKS for a mismatch sees one.
+  var storedValues: [Int: String] = [:]
+  /// What value() reports instead of the echo — a field that rounded, appended
+  /// or ignored the write.
+  var valueOverrides: [Int: String] = [:]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
-    keepFrontSeen.append(keepFront); setValues.append((app, id, value))
+    keepFrontSeen.append(keepFront); setValues.append((app, id, value)); storedValues[id] = value
+  }
+  var valueReads: [Int] = []
+  /// An element that exposes no value at all — a button, a group.
+  var valueIsNil = false
+  func value(app: String, id: Int) throws -> String? {
+    valueReads.append(id)
+    if valueIsNil { return nil }
+    return valueOverrides[id] ?? storedValues[id]
   }
   var raised: [(app: String, windowId: Int?)] = []
   func raise(app: String, windowId: Int?) throws {
@@ -950,5 +964,100 @@ func runSettleFlagTests() {
     try expect(unlisted.contains("does not offer"), "the action list is still checked: \(unlisted)")
     let gone = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":9999,"action":"press","settle":false}}"#)
     try expect(gone.contains("no_such_element"), gone)
+  }
+}
+
+// MARK: setValue read-back
+//
+// Measured in Figma: a width field holding "120" was given "180" and ended up
+// reading "120180", and the run computed seventeen more coordinates on top of
+// it. One attribute read after each write catches that. The rule has to be
+// one-sided, though — the same app stores 160.3125 and DISPLAYS 160.31, so a
+// guard demanding equality would refuse every fractional coordinate there is.
+
+func runVerifyTests() {
+  print("Reading a written value back")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+  let read = #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#
+
+  test("a write that reads back is accepted, and costs one value read") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.valueReads, [3], "exactly one read-back")
+  }
+
+  test("a field that ROUNDS the write is not a failure") {
+    let b = FakeBackend()
+    b.valueOverrides[3] = "160.31"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"160.3125"}}"#)
+    try expect(!out.contains(#""error""#), "rounding to 2dp must pass, or no fractional coordinate can be set: \(out)")
+  }
+
+  test("the appended value is refused, and the refusal names the fix") {
+    let b = FakeBackend()
+    b.valueOverrides[3] = "120180"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    try expect(out.contains(#""error""#), "expected a refusal: \(out)")
+    try expect(out.contains("120180") && out.contains("180"), "say what is there and what was wanted: \(out)")
+    try expect(out.contains("Nothing after this was run"), "a batch stopped here; say so: \(out)")
+    try expect(out.contains("command"), "hand over the select-all call: \(out)")
+  }
+
+  test("a non-numeric field with the old text still glued on is refused") {
+    let b = FakeBackend()
+    b.valueOverrides[3] = "oldnew"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new"}}"#)
+    try expect(out.contains(#""error""#), "the append signature does not need numbers: \(out)")
+  }
+
+  test("a field that normalises what it was given is left alone") {
+    // A unit or symbol the field adds to what it stored. These END in extra
+    // characters; the append bug leaves the old value in FRONT.
+    for actual in ["100%", "100 px", "100pt", "Sep 7, 2026"] {
+      let b = FakeBackend()
+      b.valueOverrides[3] = actual
+      let d = Dispatcher(backend: b)
+      _ = call(d, read)
+      let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100"}}"#)
+      try expect(!out.contains(#""error""#), "must not stop on a reformat it cannot judge (\(actual)): \(out)")
+    }
+  }
+
+  test("an element exposing no value at all is left alone") {
+    let b = FakeBackend()
+    b.valueIsNil = true
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100"}}"#)
+    try expect(!out.contains(#""error""#), "no value to compare is not evidence of failure: \(out)")
+  }
+
+  test("a refused write leaves the baseline alone, so the next read still shows it") {
+    let b = FakeBackend()
+    b.valueOverrides[3] = "120180"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    let closing = call(d, #"{"id":3,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(!closing.contains(#""error""#), "the read after a refused write still works: \(closing)")
+  }
+
+  test("verify:false skips the read entirely") {
+    let b = FakeBackend()
+    b.valueOverrides[3] = "120180"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":false}}"#)
+    try expect(out.contains(#""ok":true"#), "opting out is allowed: \(out)")
+    try expect(b.valueReads.isEmpty, "and costs nothing, got \(b.valueReads)")
   }
 }

@@ -77,7 +77,7 @@ With Stage Manager on, macOS parks every inactive app's window into the side str
 | `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in, sticky for that process), `geometry?`, `full?` | `{tree|diff, count, truncated, offscreen, hint?}` |
 | `find` | `app`, `role?` (exact), `title?` (substring, also matches value), plus the `tree` options | `{matches:[lines], count, offscreen, hint?}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces), `keepFront?` (default false) | `{ok, diff}` |
-| `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox |
+| `setValue` | `app`, `id`, `value`, `keepFront?` (default false), `verify?` (default true) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox. The value is read back unless `verify` is false |
 | `key` | `app`, `key` — one letter `a-z`, one digit, or `return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right` — plus `modifiers?` (`command`, `shift`, `option`, `control`) and `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid, so it reaches a background app on any Space. Letters exist for tool shortcuts: a design app's tools have no elements, and Figma's pen is `p` and nothing else |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
 | `pointer` | `app`, `id` (the element the fractions are measured in), `path` (list of `{x, y}` FRACTIONS 0-1, max 60), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
@@ -85,6 +85,18 @@ With Stage Manager on, macOS parks every inactive app's window into the side str
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
+
+`setValue` reads the value back before it reports, one attribute read, and
+refuses when it can PROVE the write did not land. Two proofs, both measured in
+Figma: the field is a number that differs beyond rounding (a width still
+holding `120` given `180` came back `120180`, and seventeen coordinates were
+computed on top of it), or the old text is still in front of what was written.
+Everything else passes, because a field that reformats what it stored is
+working: `160.3125` displayed as `160.31`, `100` as `100%`, an element with no
+value at all. The refusal names the wanted and actual values and hands over the
+select-all-then-type call. It throws BEFORE the snapshot, so the diff baseline
+is untouched and the next read still shows what the bad write did. `verify:
+false` skips the read.
 
 Every action also accepts `settle: false`, which returns `{ok, settled:false}`
 the moment the app accepts it: no wait, no snapshot, and the diff baseline left
