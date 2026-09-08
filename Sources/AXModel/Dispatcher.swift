@@ -17,6 +17,12 @@ public final class Dispatcher {
   /// How many settable controls `fields` lists. An inspector is a few dozen;
   /// past that the caller wants `find`, not a dump.
   public static let maxFields = 40
+  /// Roles that take typed text. Typed characters going anywhere else reach the
+  /// app as keyboard shortcuts, which in most apps change tools, views or
+  /// values without any error.
+  public static let editableRoles: Set<String> = [
+    "text field", "text area", "search field", "secure text field", "combo box", "incrementor", "stepper",
+  ]
   /// Roles that hold a value a caller might set or read back: what an inspector
   /// panel is made of. Buttons, links, rows and tabs are not fields — and
   /// neither is a MENU TRIGGER. Measured on Figma's live tree 2026-09-08: of 45
@@ -192,6 +198,18 @@ public final class Dispatcher {
       }
       let typeAsked = p["id"] as? Int
       let typeFocus = try typeAsked.map { try resolveId(app, $0) }
+      if typeAsked == nil {
+        // Without an id the text goes wherever focus already is, and the app
+        // decides what focus means. Measured 2026-09-08: a coordinate typed after
+        // a click that had not taken focus went to a canvas, where digits are
+        // shortcuts, and two shapes came out at 28% opacity — six turns to notice
+        // and repair. The app can say what has focus; ask before posting.
+        let focus = try backend.focusedControl(app: app)
+        guard let f = focus, Self.editableRoles.contains(f.role) else {
+          let what = focus.map { "\($0.role)\($0.title.map { " \"\($0)\"" } ?? "")" } ?? "no element"
+          throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: the characters would reach the app as shortcuts. Nothing was typed. Pass id to aim at a field, or click the field first and check that it took focus.")
+        }
+      }
       try backend.typeText(app: app, text: text, focusId: typeFocus)
       return try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!))
     case "raise":
@@ -278,7 +296,22 @@ public final class Dispatcher {
       }
       // An empty path means "the middle of it", which is what a caller wanting
       // to click a field means, and saves writing {"x":0.5,"y":0.5} every time.
-      let landed = try backend.pointer(app: app, id: anchor, path: path.isEmpty ? [(x: 0.5, y: 0.5)] : path,
+      let aim = path.isEmpty ? [(x: 0.5, y: 0.5)] : path
+      // Ask the app what is under the first point before posting anything. An
+      // element's reported bounds can lag what the app is drawing; measured
+      // 2026-09-08, a canvas node said it was at a point where the app had put a
+      // different node, the click selected the wrong object, and a dozen turns
+      // went on finding out. One-sided like every guard here: only something
+      // provably unrelated refuses; a container of the anchor proves nothing.
+      switch try backend.pointerHit(app: app, id: anchor, path: aim) {
+      case .inside, .container:
+        break
+      case .unrelated(let role, let title):
+        throw BridgeError.actionFailed("The first point lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): the element's reported position does not match what is on screen. Nothing was clicked. Read the app again and aim at what the tree now shows there.")
+      case .nothing:
+        throw BridgeError.actionFailed("The app reports nothing at the first point, so a click would land on empty space or another window. Nothing was clicked. Read the app again.")
+      }
+      let landed = try backend.pointer(app: app, id: anchor, path: aim,
                                        hold: hold, modifiers: try modifierList(p), clicks: clicks)
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }

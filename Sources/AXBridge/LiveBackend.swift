@@ -362,6 +362,56 @@ public final class LiveBackend: Backend {
     return points
   }
 
+  public func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation {
+    let (a, el) = try element(app, id)
+    // No usable frame: `pointer` reports that precisely; nothing to check here.
+    guard let frame = Self.frame(of: el), frame.width > 1, frame.height > 1, let first = path.first else { return .container }
+    let pt = CGPoint(x: frame.minX + frame.width * first.x, y: frame.minY + frame.height * first.y)
+    let root = appElement(a)
+    var hitRef: AXUIElement?
+    let err = AXUIElementCopyElementAtPosition(root.ref, Float(pt.x), Float(pt.y), &hitRef)
+    guard err == .success, let hitRef else { return .nothing }
+    let hit = AXElement(ref: hitRef)
+    if hit == el || Self.isDescendant(hit, of: el) { return .inside }
+    if Self.isDescendant(el, of: hit) { return .container }
+    // Neither contains the other in the tree. That still proves nothing when
+    // what was hit is a SURFACE the anchor is painted on: a canvas answers every
+    // point with the same anonymous node, and the objects an app describes on
+    // it are not under the pointer in the tree at all. Probed 2026-09-08: ten
+    // nested untitled groups for any canvas point, none of them the frame the
+    // caller aimed inside. So a hit whose own box encloses the anchor's box is
+    // a container by geometry. Only a hit with its OWN separate box — another
+    // field, another row — proves the anchor is not where it said.
+    if let hitFrame = Self.frame(of: hit), hitFrame.insetBy(dx: -2, dy: -2).contains(frame) { return .container }
+    let attrs = LiveSource(appRoot: root).attributes(of: hit)
+    return .unrelated(role: attrs?.role ?? "element", title: attrs?.title)
+  }
+
+  /// Walk AXParent from `node` looking for `ancestor`. Capped: a cycle in an
+  /// app's tree must not hang the bridge.
+  private static func isDescendant(_ node: AXElement, of ancestor: AXElement) -> Bool {
+    var cur = node
+    for _ in 0..<64 {
+      var parentRef: CFTypeRef?
+      guard AXUIElementCopyAttributeValue(cur.ref, kAXParentAttribute as CFString, &parentRef) == .success,
+            let p = parentRef, CFGetTypeID(p) == AXUIElementGetTypeID() else { return false }
+      let parent = AXElement(ref: p as! AXUIElement)
+      if parent == ancestor { return true }
+      cur = parent
+    }
+    return false
+  }
+
+  public func focusedControl(app: String) throws -> (role: String, title: String?)? {
+    let a = try resolve(app)
+    let root = appElement(a)
+    var ref: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(root.ref, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
+          let f = ref, CFGetTypeID(f) == AXUIElementGetTypeID() else { return nil }
+    guard let attrs = LiveSource(appRoot: root).attributes(of: AXElement(ref: f as! AXUIElement)) else { return nil }
+    return (role: attrs.role, title: attrs.title)
+  }
+
   /// A whole string as unicode key events, so any character types without a
   /// virtual-key table. Posted to the pid like `key`, since text entry does
   /// not hit-test and therefore works on a background window.

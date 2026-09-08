@@ -100,6 +100,12 @@ final class FakeBackend: Backend {
   func typeText(app: String, text: String, focusId: Int?) throws {
     typed.append((app, text, focusId))
   }
+  /// What the app "says" is under a pointer's first point. Honest by default.
+  var pointerHitResult: HitRelation = .inside
+  func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation { pointerHitResult }
+  /// Where keyboard focus "is". A field by default, so free typing lands.
+  var focusedControlValue: (role: String, title: String?)? = (role: "text field", title: "Address")
+  func focusedControl(app: String) throws -> (role: String, title: String?)? { focusedControlValue }
   var clickCounts: [Int] = []
   var keepFrontSeen: [Bool] = []
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {

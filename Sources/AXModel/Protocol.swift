@@ -96,6 +96,19 @@ public func isUserWindow(width: Double, height: Double, layer: Int, onscreen: Bo
   return width >= 120 && height >= 120
 }
 
+/// Where a pointer gesture would begin, as the app itself reports it.
+public enum HitRelation: Equatable {
+  /// The anchor or something inside it: its reported bounds are honest.
+  case inside
+  /// A container of the anchor — in the tree, or by geometry (a surface whose
+  /// box encloses the anchor's box): proves nothing either way, so it passes.
+  case container
+  /// Some other element is there: the anchor's bounds do not match the screen.
+  case unrelated(role: String, title: String?)
+  /// The app reports nothing at that point.
+  case nothing
+}
+
 public protocol Backend: AnyObject {
   func isTrusted() -> Bool
   /// Whether windows on another Space are in the tree. True only when the live
@@ -162,6 +175,14 @@ public protocol Backend: AnyObject {
   /// different event from two clicks in a row and is sometimes the only thing
   /// an app honours (measured: Figma's position steppers).
   func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint]
+  /// What the app says is under the FIRST point of this path, relative to the
+  /// element the caller aimed inside. Asked before anything is posted: an
+  /// element's reported bounds can lag what the app is drawing, and the only
+  /// authority on what is actually at a point is the app's own hit test.
+  func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation
+  /// The element holding keyboard focus, as its role and title, or nil when the
+  /// app reports none. Typed text goes wherever this is.
+  func focusedControl(app: String) throws -> (role: String, title: String?)?
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   /// The element's value as it stands now, for reading a `setValue` back. One
   /// attribute read, no tree walk — cheap enough to check every write, which

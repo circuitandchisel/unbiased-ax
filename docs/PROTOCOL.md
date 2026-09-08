@@ -121,6 +121,22 @@ select-all-then-type call. It throws BEFORE the snapshot, so the diff baseline
 is untouched and the next read still shows what the bad write did. `verify:
 false` skips the read.
 
+Two actions ask the app before they post anything, and refuse on evidence
+only. `pointer` asks what is under the FIRST point of its path
+(`AXUIElementCopyElementAtPosition`): the anchor itself or something inside it
+proceeds; a container of the anchor — in the tree, or a surface whose own box
+encloses the anchor's box, which is what a canvas answers for every point —
+proceeds, because it proves nothing either way; only an element with its own
+separate box refuses with `action_failed` naming what IS there — an element's
+reported bounds can lag what the app is drawing, and the click would land on the
+wrong object. `type` without an `id` asks what holds keyboard focus: a text
+field, text area, search field, combo box or stepper proceeds; anything else
+refuses, because the characters would reach the app as keyboard shortcuts. Both
+say that nothing was posted and what to do instead. Measured 2026-09-08, both
+on the same run: a click aimed inside one element selected a different one, and
+a coordinate typed after a click that had not taken focus changed a setting
+instead — a dozen and six turns respectively to find out and repair.
+
 Every action also accepts `settle: false`, which returns `{ok, settled:false}`
 the moment the app accepts it: no wait, no snapshot, and the diff baseline left
 where it was. It is for the middle of a known sequence — five inspector fields
