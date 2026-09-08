@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. A logo outline is a dozen; a
@@ -14,6 +14,15 @@ public final class Dispatcher {
   /// How many ids one `values` call may read back: every field on a shape,
   /// with room to spare, and not a way to walk the tree one attribute at a time.
   public static let maxValueIds = 40
+  /// How many settable controls `fields` lists. An inspector is a few dozen;
+  /// past that the caller wants `find`, not a dump.
+  public static let maxFields = 40
+  /// Roles that hold a value a caller might set or read back: what an
+  /// inspector panel is made of. Buttons, links, rows and tabs are not fields.
+  public static let fieldRoles: Set<String> = [
+    "text field", "text area", "search field", "secure text field", "combo box", "slider",
+    "incrementor", "stepper", "checkbox", "check box", "radio button", "pop up button", "menu button", "color well",
+  ]
   /// 2 is a double click. Past 3 nothing in a desktop app means anything.
   public static let maxClicks = 3
   /// A field value, a search phrase, a short label — not a document.
@@ -285,6 +294,17 @@ public final class Dispatcher {
         let value = (try? backend.value(app: app, id: id)) ?? nil
         return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(), "value": value ?? NSNull()]
       }]
+    case "fields":
+      // The settable controls in the latest snapshot, with ids: what a caller
+      // needs to aim its next action. Measured 2026-09-08, second Figma run:
+      // 34 of 90 turns were finds for exactly these ids ("X-position" x5,
+      // "Width" x3), all of which were in the snapshot already held here.
+      let limit = (p["limit"] as? Int) ?? Self.maxFields
+      let all = (latest[app]?.nodes ?? []).filter { Self.fieldRoles.contains($0.attributes.role) }
+      let kept = Array(all.prefix(max(0, limit)))
+      return ["fields": kept.map { n -> [String: Any] in
+        ["id": n.id, "role": n.attributes.role, "title": n.attributes.title ?? NSNull(), "value": n.attributes.value ?? NSNull()]
+      }, "truncated": kept.count < all.count]
     case "scroll":
       let id = try resolveId(app, try int(p, "id"))
       let dy = (p["dy"] as? Int) ?? 0

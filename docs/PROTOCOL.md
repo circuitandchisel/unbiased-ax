@@ -98,6 +98,7 @@ depth cap, which is why a larger `depth` never recovered any of it.
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
 | `values` | `app`, `ids` (list of element ids, at most 40) | `{values:[{id, role, title, value}]}` — the current value of each id, one attribute read each and no tree walk; `role`/`title` are what the id last described; `value` is null when the element exposes none or the id is unknown. For checking the fields a batch just wrote, instead of reading the app again |
+| `fields` | `app`, `limit?` (40) | `{fields:[{id, role, title, value}], truncated}` — the value-bearing controls (text fields, steppers, checkboxes, pop-ups, sliders…) in the latest snapshot, with their ids, in tree order; no AX traffic. For aiming the next action at an inspector without a `find` |
 
 `setValue` accepts `verify: true`, which reads the value back and refuses when
 it can PROVE the write did not land. It is OPT-IN, and that matters: measured
