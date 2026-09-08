@@ -17,11 +17,16 @@ public final class Dispatcher {
   /// How many settable controls `fields` lists. An inspector is a few dozen;
   /// past that the caller wants `find`, not a dump.
   public static let maxFields = 40
-  /// Roles that hold a value a caller might set or read back: what an
-  /// inspector panel is made of. Buttons, links, rows and tabs are not fields.
+  /// Roles that hold a value a caller might set or read back: what an inspector
+  /// panel is made of. Buttons, links, rows and tabs are not fields — and
+  /// neither is a MENU TRIGGER. Measured on Figma's live tree 2026-09-08: of 45
+  /// field-role controls, the 14 that were `pop up button` held no value at all
+  /// (Main menu, Multiplayer tools, the zoom popup, blend mode, the style
+  /// pickers) and every one of the other 31 was a real settable control. A
+  /// pop-up is pressed and picked from, which `press` already covers.
   public static let fieldRoles: Set<String> = [
     "text field", "text area", "search field", "secure text field", "combo box", "slider",
-    "incrementor", "stepper", "checkbox", "check box", "radio button", "pop up button", "menu button", "color well",
+    "incrementor", "stepper", "checkbox", "check box", "radio button", "color well",
   ]
   /// 2 is a double click. Past 3 nothing in a desktop app means anything.
   public static let maxClicks = 3

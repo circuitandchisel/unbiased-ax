@@ -60,13 +60,16 @@ final class FakeBackend: Backend {
                           title: "Win")
       return Snapshot.build(root: rebuilt, source: FakeSource(), registry: &reg, options: options)
     }
+    let base = extraNodes
     let root = late
       ? group("w", [button("w/ok", "OK"),
                     FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20)),
                     button("w/late", "Result")]
-                   + (0..<38).map { button("w/pad\($0)", "Pad \($0)") }, title: "Win")
-      : shrunk ? group("w", (0..<max(0, 40 - shrinkBy)).map { button("w/pad\($0)", "Pad \($0)") }, title: "Win")
-      : tree
+                   + (0..<38).map { button("w/pad\($0)", "Pad \($0)") } + base, title: "Win")
+      : shrunk ? group("w", (0..<max(0, 40 - shrinkBy)).map { button("w/pad\($0)", "Pad \($0)") } + base, title: "Win")
+      : (base.isEmpty ? tree : group("w", [button("w/ok", "OK"),
+                                           FakeNode("w/url", Attributes(role: "text field", title: "Address", value: "a.com", width: 300, height: 20))]
+                                          + (0..<38).map { button("w/pad\($0)", "Pad \($0)") } + base, title: "Win"))
     return Snapshot.build(root: root, source: FakeSource(), registry: &reg, options: options)
   }
   func offscreenWindows(app: String) throws -> Int { offscreen }
@@ -155,6 +158,8 @@ final class FakeBackend: Backend {
   var twoOKs = false
   var snapshotCount = 0
   var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
+  /// Extra children hung off the window, for tests that need particular roles.
+  var extraNodes: [FakeNode] = []
   func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
 }
 
