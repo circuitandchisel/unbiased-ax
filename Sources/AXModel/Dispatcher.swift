@@ -5,12 +5,15 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. A logo outline is a dozen; a
   /// thousand would be a way to hold the desktop tools for a minute.
   public static let maxPathPoints = 60
+  /// How many ids one `values` call may read back: every field on a shape,
+  /// with room to spare, and not a way to walk the tree one attribute at a time.
+  public static let maxValueIds = 40
   /// 2 is a double click. Past 3 nothing in a desktop app means anything.
   public static let maxClicks = 3
   /// A field value, a search phrase, a short label — not a document.
@@ -266,6 +269,22 @@ public final class Dispatcher {
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }
       return out
+    case "values":
+      // Read back a handful of ids in one call: the value is a fresh attribute
+      // read, role and title are what the id last described (idMemory). Measured
+      // 2026-09-08: 32 finds in one Figma run existed to check fields a batch
+      // had just written — a whole model turn each.
+      guard let raw = p["ids"] as? [Int], !raw.isEmpty else {
+        throw BridgeError.badParams("Pass ids: a non-empty list of element ids.")
+      }
+      guard raw.count <= Self.maxValueIds else {
+        throw BridgeError.badParams("\(raw.count) ids is too many (max \(Self.maxValueIds)).")
+      }
+      return ["values": raw.map { id -> [String: Any] in
+        let attrs = idMemory[app]?[id]
+        let value = (try? backend.value(app: app, id: id)) ?? nil
+        return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(), "value": value ?? NSNull()]
+      }]
     case "scroll":
       let id = try resolveId(app, try int(p, "id"))
       let dy = (p["dy"] as? Int) ?? 0
