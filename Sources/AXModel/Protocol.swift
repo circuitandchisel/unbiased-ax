@@ -150,6 +150,31 @@ public protocol Backend: AnyObject {
   func unresponsiveHint(app: String) -> String?
 }
 
+extension WindowInfo {
+  /// Which window a caller means by "the app's window", when they did not say.
+  ///
+  /// Measured on Figma: it owns a 1470x33 strip beside its real 1470x923
+  /// document window. The old rule — focused, else the first on this Space —
+  /// picked the STRIP whenever Figma was not frontmost, and a 33-pixel band of
+  /// chrome is one flat colour, so every picture came back blank. A whole
+  /// 33-minute task was spent with the model concluding it had no visual
+  /// channel at all; it had one, aimed at the wrong window.
+  ///
+  /// Focused still wins when something is focused, since that is the window a
+  /// caller is working in. Otherwise take the largest by area: a document
+  /// window dwarfs the toolbars, panels and strips an Electron app keeps
+  /// beside it, and area needs no per-app knowledge.
+  public static func likeliestDocument(_ wins: [WindowInfo]) -> WindowInfo {
+    if let focused = wins.first(where: \.focused) { return focused }
+    func area(_ w: WindowInfo) -> Int { max(0, w.width) * max(0, w.height) }
+    // On-Space windows first, so a picture of something visible beats a bigger
+    // window on another Space; within each group, the biggest.
+    let onSpace = wins.filter(\.onSpace).sorted { area($0) > area($1) }
+    if let best = onSpace.first { return best }
+    return wins.sorted { area($0) > area($1) }.first ?? wins[0]
+  }
+}
+
 public struct WindowShot {
   public var image: Data
   /// "image/jpeg" or "image/png": what `image` is encoded as.

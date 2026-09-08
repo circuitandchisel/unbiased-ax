@@ -22,6 +22,7 @@ runKeyAndPointerTests()
 runFigmaCostTests()
 runSettleFlagTests()
 runVerifyTests()
+runWindowChoiceTests()
 runServerTests()
 
 finish()

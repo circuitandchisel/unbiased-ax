@@ -159,6 +159,15 @@ public final class LiveBackend: Backend {
     if options.webContent {
       // What VoiceOver sets. Without it Chromium exposes only its own chrome
       // and tabs; page content is not in the tree at all.
+      //
+      // It is NOT enough for Figma, whose right sidebar and inspector fields
+      // are missing from a 108-node tree that does contain its left sidebar
+      // and toolbar. Ruled out as causes, each measured 2026-09-07: depth,
+      // maxElements, truncation, this flag's stickiness across repeated reads,
+      // and Electron's AXManualAccessibility, which changed nothing and is
+      // therefore not set here. Figma was in the BACKGROUND for all of those
+      // reads and posted keys did not reach its canvas either, so the open
+      // question is whether Chromium prunes the tree of an inactive window.
       AXUIElementSetAttributeValue(root.ref, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
     }
     var probe: CFTypeRef?
@@ -540,7 +549,7 @@ public final class LiveBackend: Backend {
       guard let w = wins.first(where: { $0.id == id }) else { throw BridgeError.noSuchWindow(id) }
       target = w
     } else {
-      target = wins.first(where: \.focused) ?? wins.first(where: \.onSpace) ?? wins[0]
+      target = WindowInfo.likeliestDocument(wins)
     }
     guard let el = elements[a.processIdentifier]?[target.id], let cg = RemoteToken.windowId(of: el.ref) else {
       throw BridgeError.actionFailed("could not map window \(target.id) to the window server")

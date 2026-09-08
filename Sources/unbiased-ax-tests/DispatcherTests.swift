@@ -1061,3 +1061,49 @@ func runVerifyTests() {
     try expect(b.valueReads.isEmpty, "and costs nothing, got \(b.valueReads)")
   }
 }
+
+// MARK: which window a picture means
+//
+// Figma owns a 1470x33 strip beside its real 1470x923 document window.
+// "Focused, else the first on this Space" picked the strip whenever Figma was
+// not frontmost, and 33 pixels of chrome is one flat colour — so the picture
+// came back blank and a 33-minute task was spent believing there was no visual
+// channel at all.
+
+func runWindowChoiceTests() {
+  print("Choosing the window to photograph")
+  func w(_ id: Int, _ title: String, _ width: Int, _ height: Int, focused: Bool = false, onSpace: Bool = true) -> WindowInfo {
+    WindowInfo(id: id, title: title, x: 0, y: 0, width: width, height: height,
+               minimized: false, focused: focused, onSpace: onSpace)
+  }
+
+  test("the document window wins over a chrome strip listed before it") {
+    let picked = WindowInfo.likeliestDocument([w(1, "", 1470, 33), w(2, "Untitled", 1470, 923)])
+    try expectEqual(picked.id, 2, "the 33-pixel strip is not what anyone means by Figma's window")
+  }
+
+  test("a focused window still wins, whatever its size") {
+    let picked = WindowInfo.likeliestDocument([w(1, "", 1470, 33, focused: true), w(2, "Untitled", 1470, 923)])
+    try expectEqual(picked.id, 1, "focus is the caller's own working window")
+  }
+
+  test("a visible window beats a bigger one on another Space") {
+    let picked = WindowInfo.likeliestDocument([
+      w(1, "huge elsewhere", 3840, 2160, onSpace: false),
+      w(2, "here", 1200, 800, onSpace: true),
+    ])
+    try expectEqual(picked.id, 2, "a picture of something visible is worth more")
+  }
+
+  test("with everything off-Space the biggest is still chosen, not the first") {
+    let picked = WindowInfo.likeliestDocument([
+      w(1, "", 1470, 33, onSpace: false),
+      w(2, "Untitled", 1470, 923, onSpace: false),
+    ])
+    try expectEqual(picked.id, 2, "off-Space windows photograph fine; pick the real one")
+  }
+
+  test("a single window is returned whatever it looks like") {
+    try expectEqual(WindowInfo.likeliestDocument([w(7, "", 10, 10)]).id, 7)
+  }
+}
