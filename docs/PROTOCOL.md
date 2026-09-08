@@ -137,6 +137,18 @@ on the same run: a click aimed inside one element selected a different one, and
 a coordinate typed after a click that had not taken focus changed a setting
 instead — a dozen and six turns respectively to find out and repair.
 
+An open menu owns the pointer. While the tree shows one — a `menu bar item`
+marked `[selected]` with its `menu item`s beneath it, or a context menu's items
+— `pointer` refuses with `action_failed` naming the menu, because the first
+click or drag would only dismiss it and reach nothing else. The decision is
+made on a fresh snapshot, so a menu closed since the last read does not block.
+And when an action's whole diff is menu roles — the bar item losing
+`[selected]`, its items removed — the diff opens with a line saying the action
+dismissed a menu and reached nothing else, so the lines below are not read as
+the app reacting to the click. Measured 2026-09-08: a press opened a menu and
+the next eight drags each returned the same handful of `menu bar item` lines;
+ten minutes went on blaming the display.
+
 Every action also accepts `settle: false`, which returns `{ok, settled:false}`
 the moment the app accepts it: no wait, no snapshot, and the diff baseline left
 where it was. It is for the middle of a known sequence — five inspector fields

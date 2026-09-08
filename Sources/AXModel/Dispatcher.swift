@@ -297,6 +297,19 @@ public final class Dispatcher {
       // An empty path means "the middle of it", which is what a caller wanting
       // to click a field means, and saves writing {"x":0.5,"y":0.5} every time.
       let aim = path.isEmpty ? [(x: 0.5, y: 0.5)] : path
+      // An open menu owns the pointer: the first click or drag dismisses it and
+      // reaches nothing else. Measured 2026-09-08: a press opened a menu and the
+      // next eight drags each reported the same handful of `menu bar item`
+      // lines, ten minutes spent blaming displays. Decided on a fresh look, so
+      // a menu the user has since closed does not block.
+      if Self.openMenu(in: latest[app]) != nil {
+        let opts = options(p)
+        let now = try backend.snapshot(app: app, options: opts)
+        store(app, opts, now)
+        if let name = Self.openMenu(in: now) {
+          throw BridgeError.actionFailed("A menu is open (\(name)); a pointer gesture would only dismiss it and reach nothing else. Nothing was clicked. Press escape to close it first, or pick from it with act.")
+        }
+      }
       // Ask the app what is under the first point before posting anything. An
       // element's reported bounds can lag what the app is drawing; measured
       // 2026-09-08, a canvas node said it was at a point where the app had put a
@@ -469,7 +482,13 @@ public final class Dispatcher {
       }
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
-    let diff = baseline(app, opts).map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
+    var diff = baseline(app, opts).map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
+    // When the only thing that moved is the menu bar, the action's real effect
+    // was to close a menu that was in the way: say so, or the lines below read
+    // as the app reacting to the click.
+    if let before = baseline(app, opts), diff != "(no changes)", Self.onlyMenusChanged(from: before, to: snap) {
+      diff = "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n" + diff
+    }
     store(app, opts, snap)
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
     if let refound {
@@ -583,6 +602,39 @@ public final class Dispatcher {
   private static func filterKey(_ o: SnapshotOptions) -> String {
     "d\(o.maxDepth)m\(o.maxElements)i\(o.interactiveOnly)w\(o.webContent)"
   }
+  /// The roles a menu is made of. Menu bar items are always in the tree; a
+  /// `menu item` appears only while its menu is open.
+  static let menuRoles: Set<String> = ["menu bar", "menu bar item", "menu", "menu item"]
+
+  /// The title of the open menu, if the snapshot shows one: a selected menu bar
+  /// item (measured: `menu bar item "Edit" [selected]` while open, plain when
+  /// closed) or, failing a title, any exposed menu item — a context menu.
+  static func openMenu(in snap: Snapshot?) -> String? {
+    guard let snap else { return nil }
+    if let bar = snap.nodes.first(where: { $0.attributes.role == "menu bar item" && $0.attributes.selected == true }) {
+      return bar.attributes.title ?? "menu bar item \(bar.id)"
+    }
+    if snap.nodes.contains(where: { $0.attributes.role == "menu item" }) { return "a context menu" }
+    return nil
+  }
+
+  /// True when every added, changed and removed node between the two snapshots
+  /// is a menu role — the diff is a menu opening or closing and nothing else.
+  static func onlyMenusChanged(from before: Snapshot, to after: Snapshot) -> Bool {
+    let old = Dictionary(uniqueKeysWithValues: before.nodes.map { ($0.id, $0) })
+    let new = Dictionary(uniqueKeysWithValues: after.nodes.map { ($0.id, $0) })
+    var touched = 0
+    for n in after.nodes where old[n.id] != n {
+      guard menuRoles.contains(n.attributes.role) else { return false }
+      touched += 1
+    }
+    for n in before.nodes where new[n.id] == nil {
+      guard menuRoles.contains(n.attributes.role) else { return false }
+      touched += 1
+    }
+    return touched > 0
+  }
+
   private func baseline(_ app: String, _ o: SnapshotOptions) -> Snapshot? { baselines[app]?[Self.filterKey(o)] }
   private func store(_ app: String, _ o: SnapshotOptions, _ snap: Snapshot) {
     var perApp = baselines[app] ?? [:]
