@@ -89,15 +89,25 @@ depth cap, which is why a larger `depth` never recovered any of it.
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces), `keepFront?` (default false) | `{ok, diff}` |
 | `setValue` | `app`, `id`, `value`, `keepFront?` (default false), `verify?` (default true) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox. The value is read back unless `verify` is false |
 | `key` | `app`, `key` — one letter `a-z`, one digit, or `return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right` — plus `modifiers?` (`command`, `shift`, `option`, `control`) and `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid, so it reaches a background app on any Space. Letters exist for tool shortcuts: a design app's tools have no elements, and Figma's pen is `p` and nothing else |
+| `type` | `app`, `text` (max 500 chars), `id?` (focus this element first) | `{ok, diff}` — the whole string as real unicode key events, posted to the pid so it reaches a background window. TEXT ENTRY, not shortcuts: `key` with modifiers is still how you send command+a. One call instead of one per character, because a design app's inspector wants four numbers per shape and `-19.6875` alone is nine keys |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
-| `pointer` | `app`, `id` (the element the fractions are measured in), `path` (list of `{x, y}` FRACTIONS 0-1, max 60), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
+| `pointer` | `app`, `id` (the element the fractions are measured in), `path?` (list of `{x, y}` FRACTIONS 0-1, max 60; omitted means the element's centre), `clicks?` (1-3; 2 is a double click, a different event that some controls honour where one does not), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
 | `screenshot` | `app`, `window?` (id from `windows`; default the focused window) | `{image, mime, width, height, window, onSpace, note?}` — JPEG (base64, `mime` says) of that one window, taken through ScreenCaptureKit wherever the window is, without raising anything; 1x; needs Screen Recording. Off-Space windows carry `note`: what the app only draws while visible (map tiles, video) may be blank |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
 
-`setValue` reads the value back before it reports, one attribute read, and
-refuses when it can PROVE the write did not land. Two proofs, both measured in
+`setValue` accepts `verify: true`, which reads the value back and refuses when
+it can PROVE the write did not land. It is OPT-IN, and that matters: measured
+in Figma, an element the tree calls a `text field` (width, height, a hex box)
+honours a value write and reports it immediately, while a `stepper`
+(x-position, y-position, rotation) IGNORES it — the number appears in the box,
+the value never changes, the tree keeps reporting the old one, and it commits
+when focus leaves, which is how a 67 became 100100. Verifying by default
+therefore refused writes that had landed on other elements and taught the
+caller to distrust the bridge. For a stepper the working sequence is four
+steps in one batch: `pointer` the field, `key a +command`, `type` the number,
+`key return` — verified live. With `verify: true` it Two proofs, both measured in
 Figma: the field is a number that differs beyond rounding (a width still
 holding `120` given `180` came back `120180`, and seventeen coordinates were
 computed on top of it), or the old text is still in front of what was written.

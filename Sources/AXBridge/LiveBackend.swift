@@ -312,7 +312,7 @@ public final class LiveBackend: Backend {
   /// which means the window has to be where those coordinates are. A parked or
   /// off-Space window is refused rather than clicked at blindly, because the
   /// click would land on whatever is at that spot instead.
-  public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint] {
+  public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint] {
     let a = try resolve(app)
     let (_, el) = try element(app, id)
     guard let frame = Self.frame(of: el) else {
@@ -329,9 +329,9 @@ public final class LiveBackend: Backend {
     }
     let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
     let f = Self.flags(for: modifiers)
-    func post(_ type: CGEventType, _ at: CGPoint) {
+    func post(_ type: CGEventType, _ at: CGPoint, clickState: Int = 1) {
       guard let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: .left) else { return }
-      ev.setIntegerValueField(.mouseEventClickState, value: 1)
+      ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
       if !f.isEmpty { ev.flags = f }
       ev.post(tap: .cghidEventTap)
       usleep(Self.pointerStepUs)
@@ -344,12 +344,56 @@ public final class LiveBackend: Backend {
     } else {
       for pt in points {
         post(.mouseMoved, pt)
-        post(.leftMouseDown, pt)
-        post(.leftMouseUp, pt)
+        // A double click is not two clicks: the click STATE rises within one
+        // gesture, and an app can honour the second and ignore a pair of
+        // singles. Measured on Figma's position steppers, where one click did
+        // not open the field for editing and a double click did.
+        for n in 1...max(1, clicks) {
+          post(.leftMouseDown, pt, clickState: n)
+          post(.leftMouseUp, pt, clickState: n)
+        }
       }
     }
     return points
   }
+
+  /// A whole string as unicode key events, so any character types without a
+  /// virtual-key table. Posted to the pid like `key`, since text entry does
+  /// not hit-test and therefore works on a background window.
+  public func typeText(app: String, text: String, focusId: Int?) throws {
+    let a = try resolve(app)
+    if let id = focusId {
+      let (_, el) = try element(app, id)
+      AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    }
+    // A beat before the first character. Measured on Figma: typing immediately
+    // after a click and a command+a lost the FIRST keystroke — "67" into a
+    // field holding "120" committed as "7" — because the field was still
+    // entering edit mode and processing the selection. Everything after the
+    // first character arrived fine.
+    usleep(Self.typeLeadUs)
+    // One event per character. A single event carrying the whole string is
+    // accepted by some apps and silently truncated by others; per character is
+    // what a keyboard actually does, and it lets an app's input handler run
+    // between them, which a React-controlled field needs.
+    for ch in text.unicodeScalars {
+      var utf16 = Array(String(ch).utf16)
+      for isDown in [true, false] {
+        guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: isDown) else { continue }
+        ev.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+        ev.postToPid(a.processIdentifier)
+      }
+      usleep(Self.typeStepUs)
+    }
+  }
+
+  /// Between characters. Fast enough not to dominate a batch, slow enough that
+  /// a web input's handler keeps up.
+  static let typeStepUs: UInt32 = 20_000
+  /// Before the first character, so a field that has just been clicked into
+  /// does not eat it. 120ms on a ten-character value is nothing next to the
+  /// turn it saves.
+  static let typeLeadUs: UInt32 = 120_000
 
   /// Between events. Apps that build a path from clicks drop points sent
   /// faster than they redraw; measured at 70ms in the comparison run.

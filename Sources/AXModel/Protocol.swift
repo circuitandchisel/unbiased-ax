@@ -120,6 +120,15 @@ public protocol Backend: AnyObject {
   /// control. Needed because a design tool's tools live behind one-letter
   /// shortcuts with no element and often no menu equivalent.
   func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws
+  /// A whole string, as real keystrokes. One step instead of one per
+  /// character: "-19.6875" is nine `key` calls, and a design app's inspector
+  /// wants four such numbers per shape, which does not fit a batch.
+  ///
+  /// Delivered as unicode key events rather than mapped virtual keys, so a
+  /// minus sign, a decimal point and a hex digit all work without a keycode
+  /// table. It is TEXT ENTRY, not shortcuts: `key` with modifiers remains the
+  /// way to send command+a.
+  func typeText(app: String, text: String, focusId: Int?) throws
   /// Pointer input inside one element: a tap at each point, or one press-drag-
   /// release through all of them when `hold` is set. Points are FRACTIONS of
   /// the element's box, so no caller ever handles screen pixels or display
@@ -130,7 +139,10 @@ public protocol Backend: AnyObject {
   /// hit-testing, exactly like a press, so a parked or off-Space window cannot
   /// receive it — and a click aimed where the window is not would land on
   /// whatever IS there, which is why it refuses instead of guessing.
-  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint]
+  /// `clicks` is the click COUNT of each tap — 2 is a double click, which is a
+  /// different event from two clicks in a row and is sometimes the only thing
+  /// an app honours (measured: Figma's position steppers).
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   /// The element's value as it stands now, for reading a `setValue` back. One
   /// attribute read, no tree walk — cheap enough to check every write, which

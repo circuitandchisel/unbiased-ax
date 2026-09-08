@@ -5,12 +5,16 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. A logo outline is a dozen; a
   /// thousand would be a way to hold the desktop tools for a minute.
   public static let maxPathPoints = 60
+  /// 2 is a double click. Past 3 nothing in a desktop app means anything.
+  public static let maxClicks = 3
+  /// A field value, a search phrase, a short label — not a document.
+  public static let maxTypeLength = 500
 
   /// The punctuation that carries a shortcut. Figma's bring-to-front is
   /// command+shift+], and refusing `]` sent one run into several minutes of
@@ -125,7 +129,13 @@ public final class Dispatcher {
       // Read it back unless told not to. This throws BEFORE afterAction, so the
       // diff baseline is left where it was and the next read still shows what
       // the bad write did.
-      if (p["verify"] as? Bool) ?? true { try verifyValue(app, id: id, wanted: value) }
+      // OPT-IN, deliberately. Shipped default-on and measured wrong the same
+      // day: Figma's position steppers ignore an AXValue write entirely and
+      // keep reporting the old value, so the read-back refused writes that had
+      // landed elsewhere and taught the caller to distrust the bridge. It is
+      // honest only where a write is actually observable — a `text field`,
+      // which Figma does honour.
+      if (p["verify"] as? Bool) == true { try verifyValue(app, id: id, wanted: value) }
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "key":
       let key = try string(p, "key").lowercased()
@@ -142,6 +152,21 @@ public final class Dispatcher {
       // was built for was repeated PRESSES on dead controls, not keys.
       try backend.pressKey(app: app, key: key, modifiers: mods, focusId: focusId)
       return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
+    case "type":
+      // Text entry, not shortcuts. A whole string in one call, because a
+      // design app's inspector wants four numbers per shape and one key per
+      // step does not fit a batch: "-19.6875" alone is nine steps.
+      guard let text = p["text"] as? String else {
+        throw BridgeError.badParams("Missing required string param \"text\".")
+      }
+      guard !text.isEmpty else { throw BridgeError.badParams("text is empty; nothing to type.") }
+      guard text.count <= Self.maxTypeLength else {
+        throw BridgeError.badParams("text is \(text.count) characters; at most \(Self.maxTypeLength) per call.")
+      }
+      let typeAsked = p["id"] as? Int
+      let typeFocus = try typeAsked.map { try resolveId(app, $0) }
+      try backend.typeText(app: app, text: text, focusId: typeFocus)
+      return try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!))
     case "raise":
       // Measured over six runs: a press does nothing because the window is
       // parked, and the caller raises to fix it. That cannot work. Raising
@@ -213,9 +238,20 @@ public final class Dispatcher {
       // the frame, and a fraction of a known box cannot go wrong that way.
       // The result reports where each fraction actually landed.
       let anchor = try resolveId(app, try int(p, "id"))
-      let path = try pathPoints(p)
+      // No path at all means the middle of the element. Clicking a field to
+      // put a caret in it is the commonest use by far, and spelling out
+      // {"x":0.5,"y":0.5} for it is noise. A path that IS given must still be
+      // well formed.
+      let path = p["path"] == nil ? [] : try pathPoints(p)
       let hold = (p["hold"] as? Bool) ?? false
-      let landed = try backend.pointer(app: app, id: anchor, path: path, hold: hold, modifiers: try modifierList(p))
+      let clicks = (p["clicks"] as? Int) ?? 1
+      guard clicks >= 1, clicks <= Self.maxClicks else {
+        throw BridgeError.badParams("clicks must be 1 to \(Self.maxClicks); 2 is a double click.")
+      }
+      // An empty path means "the middle of it", which is what a caller wanting
+      // to click a field means, and saves writing {"x":0.5,"y":0.5} every time.
+      let landed = try backend.pointer(app: app, id: anchor, path: path.isEmpty ? [(x: 0.5, y: 0.5)] : path,
+                                       hold: hold, modifiers: try modifierList(p), clicks: clicks)
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }
       return out
@@ -506,10 +542,15 @@ public final class Dispatcher {
     let a = actual.trimmingCharacters(in: .whitespaces)
     if a == w { return }
     func fail(_ why: String) throws -> Never {
+      // The remedy CLICKS the field first. An earlier version opened with
+      // command+a and delete, and when focus is not inside a field that
+      // selects every layer in the document and deletes them — measured, it
+      // cleared a canvas mid-task. Clicking puts the caret in the field, so
+      // the select-all that follows is scoped to it.
       throw BridgeError.actionFailed(
         "setValue did not land: asked for \"\(wanted)\", the field now reads \"\(actual)\" (\(why)). "
-        + "Nothing after this was run. Select the old text before typing: "
-        + "computer_do {\"app\":\"\(app)\",\"steps\":[{\"do\":\"key\",\"key\":\"a\",\"modifiers\":[\"command\"],\"id\":\(id)},{\"do\":\"key\",\"key\":\"delete\"},{\"do\":\"set_value\",\"id\":\(id),\"text\":\"\(wanted)\"}]}")
+        + "Nothing after this was run. Click into the field, select its contents, then type: "
+        + "computer_do {\"app\":\"\(app)\",\"steps\":[{\"do\":\"pointer\",\"id\":\(id)},{\"do\":\"key\",\"key\":\"a\",\"modifiers\":[\"command\"]},{\"do\":\"type\",\"text\":\"\(wanted)\"},{\"do\":\"key\",\"key\":\"return\"}]}")
     }
     if let wn = Double(w), let an = Double(a) {
       let slack = max(Self.verifyAbs, abs(wn) * Self.verifyRel)

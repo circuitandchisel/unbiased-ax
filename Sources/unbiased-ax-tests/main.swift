@@ -23,6 +23,7 @@ runFigmaCostTests()
 runSettleFlagTests()
 runVerifyTests()
 runWindowChoiceTests()
+runTypeTests()
 runServerTests()
 
 finish()

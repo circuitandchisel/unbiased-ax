@@ -86,12 +86,18 @@ final class FakeBackend: Backend {
   /// is fixed at 0,0 200x100 so a fraction maps to an obvious number.
   var pointerCalls: [(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String])] = []
   var pointerFails: String? = nil
-  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String]) throws -> [CGPoint] {
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint] {
     if let why = pointerFails { throw BridgeError.actionFailed(why) }
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
+    clickCounts.append(clicks)
     return path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
   }
+  var typed: [(app: String, text: String, focusId: Int?)] = []
+  func typeText(app: String, text: String, focusId: Int?) throws {
+    typed.append((app, text, focusId))
+  }
+  var clickCounts: [Int] = []
   var keepFrontSeen: [Bool] = []
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
     keepFrontSeen.append(keepFront); acted.append((app, id, action))
@@ -984,7 +990,7 @@ func runVerifyTests() {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     try expect(out.contains(#""ok":true"#), out)
     try expectEqual(b.valueReads, [3], "exactly one read-back")
   }
@@ -994,7 +1000,7 @@ func runVerifyTests() {
     b.valueOverrides[3] = "160.31"
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"160.3125"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"160.3125","verify":true}}"#)
     try expect(!out.contains(#""error""#), "rounding to 2dp must pass, or no fractional coordinate can be set: \(out)")
   }
 
@@ -1003,11 +1009,12 @@ func runVerifyTests() {
     b.valueOverrides[3] = "120180"
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     try expect(out.contains(#""error""#), "expected a refusal: \(out)")
     try expect(out.contains("120180") && out.contains("180"), "say what is there and what was wanted: \(out)")
     try expect(out.contains("Nothing after this was run"), "a batch stopped here; say so: \(out)")
-    try expect(out.contains("command"), "hand over the select-all call: \(out)")
+    try expect(out.contains("pointer"), "the remedy must CLICK the field first: \(out)")
+    try expect(!out.contains("delete"), "never command+a then delete — outside a field that deletes every layer: \(out)")
   }
 
   test("a non-numeric field with the old text still glued on is refused") {
@@ -1015,7 +1022,7 @@ func runVerifyTests() {
     b.valueOverrides[3] = "oldnew"
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new","verify":true}}"#)
     try expect(out.contains(#""error""#), "the append signature does not need numbers: \(out)")
   }
 
@@ -1027,7 +1034,7 @@ func runVerifyTests() {
       b.valueOverrides[3] = actual
       let d = Dispatcher(backend: b)
       _ = call(d, read)
-      let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100"}}"#)
+      let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100","verify":true}}"#)
       try expect(!out.contains(#""error""#), "must not stop on a reformat it cannot judge (\(actual)): \(out)")
     }
   }
@@ -1037,7 +1044,7 @@ func runVerifyTests() {
     b.valueIsNil = true
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"100","verify":true}}"#)
     try expect(!out.contains(#""error""#), "no value to compare is not evidence of failure: \(out)")
   }
 
@@ -1046,9 +1053,22 @@ func runVerifyTests() {
     b.valueOverrides[3] = "120180"
     let d = Dispatcher(backend: b)
     _ = call(d, read)
-    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     let closing = call(d, #"{"id":3,"method":"tree","params":{"app":"Brave Browser"}}"#)
     try expect(!closing.contains(#""error""#), "the read after a refused write still works: \(closing)")
+  }
+
+  test("verify is OFF by default, because a stepper never reports the write") {
+    // Figma's X/Y steppers ignore an AXValue write and keep reporting the old
+    // value. Shipped default-on for a few hours and it refused writes that had
+    // landed on other elements, which taught the caller to distrust the bridge.
+    let b = FakeBackend()
+    b.valueOverrides[3] = "120180"
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
+    try expect(out.contains(#""ok":true"#), "no opt-in, no refusal: \(out)")
+    try expect(b.valueReads.isEmpty, "and no read at all, got \(b.valueReads)")
   }
 
   test("verify:false skips the read entirely") {
@@ -1105,5 +1125,84 @@ func runWindowChoiceTests() {
 
   test("a single window is returned whatever it looks like") {
     try expectEqual(WindowInfo.likeliestDocument([w(7, "", 10, 10)]).id, 7)
+  }
+}
+
+// MARK: typing a whole string, and click counts
+//
+// Codex's working recipe for a Figma stepper is four primitives: click the
+// field, select all, type the number, commit. Ours needed twelve, because a
+// key is one character — "-19.6875" alone is nine steps, so four fields did
+// not fit a batch at all.
+
+func runTypeTests() {
+  print("Typing text and counting clicks")
+  func call(_ d: Dispatcher, _ json: String) -> String { d.handle(line: json) }
+  let read = #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#
+
+  test("one call types the whole string, punctuation and sign included") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","text":"-19.6875"}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.typed.count, 1, "one call, not nine")
+    try expectEqual(b.typed[0].text, "-19.6875")
+    try expect(b.typed[0].focusId == nil, "without id it lands wherever focus is")
+  }
+
+  test("an id focuses the field first") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    _ = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","text":"460","id":3}}"#)
+    try expectEqual(b.typed[0].focusId, 3)
+  }
+
+  test("empty text and an essay are both refused, by reason") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    try expect(call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","text":""}}"#).contains("nothing to type"))
+    let long = String(repeating: "x", count: Dispatcher.maxTypeLength + 1)
+    try expect(call(d, "{\"id\":3,\"method\":\"type\",\"params\":{\"app\":\"Brave Browser\",\"text\":\"\(long)\"}}").contains("at most"))
+    try expect(b.typed.isEmpty, "neither reached the backend")
+  }
+
+  test("a pointer click defaults to one click and takes a double") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    _ = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":3,"path":[{"x":0.5,"y":0.5}]}}"#)
+    _ = call(d, #"{"id":3,"method":"pointer","params":{"app":"Brave Browser","id":3,"path":[{"x":0.5,"y":0.5}],"clicks":2}}"#)
+    try expectEqual(b.clickCounts, [1, 2], "the count reaches the backend")
+  }
+
+  test("an absent path means the middle of the element") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains(#""ok":true"#), "clicking a field should not need x and y spelled out: \(out)")
+    try expectEqual(b.pointerCalls.count, 1)
+    try expectEqual(b.pointerCalls[0].path.count, 1)
+    try expect(b.pointerCalls[0].path[0].x == 0.5 && b.pointerCalls[0].path[0].y == 0.5, "centre")
+  }
+
+  test("a silly click count is refused rather than hammering a control") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, read)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":3,"clicks":40}}"#)
+    try expect(out.contains("clicks must be"), out)
+    try expect(b.pointerCalls.isEmpty, "nothing was clicked")
+  }
+
+  test("type is listed as a method and refuses an unknown app like the rest") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"type","params":{"app":"Nope","text":"x"}}"#)
+    try expect(out.contains("no_such_app"), out)
+    try expect(call(d, #"{"id":2,"method":"nonsense","params":{}}"#).contains("type"), "the method list names it")
   }
 }
