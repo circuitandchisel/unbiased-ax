@@ -33,7 +33,15 @@ public final class Dispatcher {
   }
 
   private let backend: Backend
-  private var last: [String: Snapshot] = [:]
+  /// One diff baseline per (app, filter). A filter flip diffs against that
+  /// filter's own last read; only a filter never read before gets a full tree.
+  /// Measured 2026-09-08 on the Figma logo run: 28 web/interactive flips
+  /// between consecutive reads, each forcing the app to ask for the whole
+  /// tree (~9KB), and the two compactions that followed cost nine minutes.
+  private var baselines: [String: [String: Snapshot]] = [:]
+  /// The most recent snapshot of each app under any filter: what a stale id
+  /// is re-found against, and where an element's action list is looked up.
+  private var latest: [String: Snapshot] = [:]
   /// See remember(_:_:) — id -> what that id described, per app.
   private var idMemory: [String: [Int: Attributes]] = [:]
   /// Apps whose raise we have already declined during the CURRENT parked
@@ -84,10 +92,11 @@ public final class Dispatcher {
       try annotateSpaces(&out, app: app, windowsHere: { wins.count })
       return out
     case "tree":
-      let snap = try backend.snapshot(app: app, options: options(p))
-      defer { last[app] = snap; remember(app, snap) }
+      let opts = options(p)
+      let snap = try backend.snapshot(app: app, options: opts)
+      defer { store(app, opts, snap) }
       var out: [String: Any] = ["count": snap.nodes.count, "truncated": snap.truncated]
-      if let prev = last[app], !((p["full"] as? Bool) ?? false) {
+      if let prev = baseline(app, opts), !((p["full"] as? Bool) ?? false) {
         out["diff"] = Differ.render(from: prev, to: snap, geometry: geometry)
       } else {
         out["tree"] = Formatter.render(snap, geometry: geometry)
@@ -101,8 +110,9 @@ public final class Dispatcher {
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "find":
-      let snap = try backend.snapshot(app: app, options: options(p))
-      last[app] = snap; remember(app, snap)
+      let opts = options(p)
+      let snap = try backend.snapshot(app: app, options: opts)
+      store(app, opts, snap)
       let role = p["role"] as? String
       let needle = (p["title"] as? String)?.lowercased()
       let hits = snap.nodes.filter { n in
@@ -209,8 +219,9 @@ public final class Dispatcher {
       // Return the tree, not just ok: the model's next move is always to read,
       // and a launched app is the one case where waiting for it to be readable
       // is our job rather than something to make the model poll for.
-      let snap = try backend.snapshot(app: app, options: options(p))
-      last[app] = snap; remember(app, snap)
+      let launchOpts = options(p)
+      let snap = try backend.snapshot(app: app, options: launchOpts)
+      store(app, launchOpts, snap)
       var out: [String: Any] = [
         "ok": true,
         "alreadyRunning": alreadyRunning,
@@ -329,7 +340,7 @@ public final class Dispatcher {
     // How long the action waited for the app, so a caller's diagnostics can
     // say where a slow task spent its time.
     var waitedMs = 0
-    if let prev = last[app] {
+    if let prev = baseline(app, opts) {
       let started = Date()
       var stableLooks = 0
       // Settle policy, set from measurement rather than taste. Typing into
@@ -378,8 +389,8 @@ public final class Dispatcher {
       }
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
-    let diff = last[app].map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
-    last[app] = snap; remember(app, snap)
+    let diff = baseline(app, opts).map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
+    store(app, opts, snap)
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
     if let refound {
       // Say it plainly: the caller's number is stale from here on, and the
@@ -464,8 +475,10 @@ public final class Dispatcher {
   }
 
   private func resolveId(_ app: String, _ id: Int) throws -> Int {
-    guard let snap = last[app] else { throw BridgeError.noSuchElement(id) }
-    if snap.nodes.contains(where: { $0.id == id }) { return id }
+    guard let snap = latest[app] else { throw BridgeError.noSuchElement(id) }
+    // Ids come from the per-app registry, so one seen under ANY filter names a
+    // real element, whatever filter the most recent read used.
+    if snapshots(app).contains(where: { $0.nodes.contains { $0.id == id } }) { return id }
     guard let want = idMemory[app]?[id], Self.identifiable(want) else { throw BridgeError.noSuchElement(id) }
     let matches = snap.nodes.filter { Self.sameControl($0.attributes, want) }
     guard matches.count == 1 else { throw BridgeError.noSuchElement(id) }
@@ -487,6 +500,20 @@ public final class Dispatcher {
   /// What each id looked like, across every snapshot of an app, so a refused
   /// id can be matched against the control it named. Capped: ids only ever
   /// increase, so dropping the lowest drops the oldest.
+  private static func filterKey(_ o: SnapshotOptions) -> String {
+    "d\(o.maxDepth)m\(o.maxElements)i\(o.interactiveOnly)w\(o.webContent)"
+  }
+  private func baseline(_ app: String, _ o: SnapshotOptions) -> Snapshot? { baselines[app]?[Self.filterKey(o)] }
+  private func store(_ app: String, _ o: SnapshotOptions, _ snap: Snapshot) {
+    var perApp = baselines[app] ?? [:]
+    perApp[Self.filterKey(o)] = snap
+    baselines[app] = perApp
+    latest[app] = snap
+    remember(app, snap)
+  }
+  /// Every snapshot this app currently has a baseline for, one per filter.
+  private func snapshots(_ app: String) -> [Snapshot] { Array((baselines[app] ?? [:]).values) }
+
   private func remember(_ app: String, _ snap: Snapshot) {
     var mem = idMemory[app] ?? [:]
     for n in snap.nodes where Self.identifiable(n.attributes) { mem[n.id] = n.attributes }
@@ -581,7 +608,9 @@ public final class Dispatcher {
   /// model spent four turns finding that out. Only a non-empty list is
   /// trusted here — an empty one may mean the actions were never fetched.
   private func offers(_ app: String, _ id: Int, _ action: String) throws {
-    guard let node = last[app]?.nodes.first(where: { $0.id == id }), !node.attributes.actions.isEmpty, !node.attributes.actions.contains(action) else { return }
+    let node = latest[app]?.nodes.first(where: { $0.id == id })
+      ?? snapshots(app).lazy.compactMap({ $0.nodes.first(where: { $0.id == id }) }).first
+    guard let node, !node.attributes.actions.isEmpty, !node.attributes.actions.contains(action) else { return }
     throw BridgeError.actionFailed("Element \(id) does not offer \"\(action)\"; it offers {\(node.attributes.actions.joined(separator: ","))}. Use one of those, or a different path: the keyboard, or a menu bar command.")
   }
 

@@ -27,7 +27,7 @@ Three rules the model must know:
    makes every arrow key look like a no-op.
 4. **`tree` returns a diff after the first call** for an app, unless
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
-   when nothing moved. `find`, `launch` and every action reset the baseline.
+   when nothing moved. Baselines are kept per filter (`depth`, `maxElements`, `interactive`, `web`): a read under a filter used before is a diff against that filter's last read; a filter never used is a full tree. `find`, `launch` and every action update the baseline of the filter they ran with. Ids are per app, not per filter — an id seen under any filter is actable.
 5. **Every action waits for the app to react** before reporting, unless it says
    `"settle": false`: at least 0.6s,
    at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that

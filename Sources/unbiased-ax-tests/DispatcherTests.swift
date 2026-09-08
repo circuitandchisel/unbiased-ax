@@ -153,7 +153,7 @@ final class FakeBackend: Backend {
   var rebuildOK = false
   /// Two controls that match each other: re-finding must refuse, not pick.
   var twoOKs = false
-  private var snapshotCount = 0
+  var snapshotCount = 0
   var scrolls: [(app: String, id: Int, dx: Int, dy: Int)] = []
   func scroll(app: String, id: Int, dx: Int, dy: Int) throws { scrolls.append((app, id, dx, dy)) }
 }
