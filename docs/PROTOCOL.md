@@ -36,7 +36,8 @@ Three rules the model must know:
    rendered) and waits up to 3.5s for what replaces it. Both thresholds matter:
    a bare "fewer nodes" test also fired on every Figma selection change and
    closing panel, where nothing more was coming, and cost 94 seconds of waiting
-   in one task. The result carries `waitedMs`. The first action on an app
+   in one task. `key escape` is exempt: a smaller tree is its final state, so
+   it settles on the ordinary deadline. The result carries `waitedMs`. The first action on an app
    never read has no baseline: it returns at once, and `diff` is the full tree.
 
 ## Spaces

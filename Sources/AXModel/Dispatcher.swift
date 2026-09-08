@@ -161,7 +161,7 @@ public final class Dispatcher {
       // path the parked-window advice sends callers down. The waste this rule
       // was built for was repeated PRESSES on dead controls, not keys.
       try backend.pressKey(app: app, key: key, modifiers: mods, focusId: focusId)
-      return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!))
+      return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!), closing: key == "escape")
     case "type":
       // Text entry, not shortcuts. A whole string in one call, because a
       // design app's inspector wants four numbers per shape and one key per
@@ -315,7 +315,7 @@ public final class Dispatcher {
 
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
-  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil) throws -> Any {
+  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false) throws -> Any {
     // `"settle": false` means the caller is mid-sequence and does not want a
     // diff for this step: do the action and return. Measured on a Figma icon
     // built out of inspector fields — 372 actions, 253 seconds of settle
@@ -379,7 +379,10 @@ public final class Dispatcher {
         // waiting in one task. A list collapsing loses tens of nodes; a panel
         // tidying itself loses a few.
         let lost = prev.nodes.count - snap.nodes.count
-        let shrank = lost >= Self.shrinkNodes && lost * 10 >= prev.nodes.count
+        // `closing`: the action's whole purpose was to make the tree smaller —
+        // escape dismissing a panel — so a shrink IS the settled state. Measured
+        // 2026-09-08: eight escapes after Figma's colour picker, 3.5s each.
+        let shrank = !closing && lost >= Self.shrinkNodes && lost * 10 >= prev.nodes.count
         if elapsed >= (shrank ? Self.settleDeadlineShrunk : Self.settleDeadline) { break }
         if reacted && !shrank && stableLooks >= 1 && elapsed >= Self.settleFloor { break }
         Thread.sleep(forTimeInterval: Self.settleStep)
