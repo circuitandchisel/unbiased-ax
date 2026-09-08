@@ -67,6 +67,16 @@ With Stage Manager on, macOS parks every inactive app's window into the side str
 
 `screenshot` photographs a window on another Space as well (measured: Maps' UI came back in 72ms with Brave still frontmost). What the app does not draw while hidden is black in the picture; controls and text are not.
 
+A zero width or height hides an element only when it has no children. A
+container that reports zero and still has children is a layout wrapper, and its
+children are hoisted to its depth: measured, Figma labels a group "Right
+sidebar" at 1470x0 whose child panel is a real 241x885, and dropping that
+subtree removed every inspector field in the app — position, size, opacity and
+every fill swatch — from every tree ever taken of it, while "Left sidebar" at
+57x885 came through. Genuinely hidden content reports zero for its children
+too, so it still disappears, one node at a time. The check runs before the
+depth cap, which is why a larger `depth` never recovered any of it.
+
 ## Methods
 
 | method | params | result |

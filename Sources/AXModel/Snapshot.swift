@@ -48,13 +48,34 @@ public struct Snapshot: Equatable {
     func visit(_ node: S.Node, depth: Int) {
       if nodes.count >= options.maxElements { truncated = true; return }
       guard let attrs = source.attributes(of: node) else { return }
+      let kids = source.children(of: node)
       // Never prune the root: the caller asked for exactly this element, and
       // Finder's application element reports a KNOWN 0x0 (measured).
-      if depth > 0 && attrs.geometryKnown && (attrs.width == 0 || attrs.height == 0) { return }
+      //
+      // A zero dimension means invisible only for a LEAF. A container that
+      // reports zero and still has children is a layout wrapper, and dropping
+      // its subtree loses everything inside it: measured in Figma, the group
+      // labelled "Right sidebar" reports 1470x0 while its child panel is a
+      // real 241x885 — so the entire inspector (X, Y, W, H, opacity, every
+      // fill swatch, all of it) was missing from every tree we ever took of
+      // that app, while "Left sidebar" at 57x885 came through fine. One task
+      // spent 33 minutes concluding the panel "isn't exposed in the
+      // accessibility tree" and hunting through menus for it.
+      //
+      // So hoist through it instead. Anything genuinely hidden reports zero
+      // for its own children too, and each of those is dropped on its own
+      // merits one level down — which keeps the original rule's intent without
+      // taking a real subtree with it. The check must run AFTER children are
+      // fetched, and before the depth check, which is why raising `depth`
+      // never recovered any of this.
+      if depth > 0 && attrs.geometryKnown && (attrs.width == 0 || attrs.height == 0) {
+        if kids.isEmpty { return }
+        for k in kids { visit(k, depth: depth) }
+        return
+      }
 
       let structural = !Role.isInteractive(attrs.role)
       let untitled = (attrs.title ?? "").isEmpty && (attrs.value ?? "").isEmpty
-      let kids = source.children(of: node)
 
       // Hoist: an untitled container with children says nothing itself.
       if structural && untitled && !kids.isEmpty && depth > 0 {
