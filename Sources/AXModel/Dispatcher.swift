@@ -487,7 +487,8 @@ public final class Dispatcher {
     // was to close a menu that was in the way: say so, or the lines below read
     // as the app reacting to the click.
     if let before = baseline(app, opts), diff != "(no changes)", Self.onlyMenusChanged(from: before, to: snap) {
-      diff = "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n" + diff
+      diff = (closing ? "The open menu closed and nothing else changed.\n"
+                      : "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n") + diff
     }
     store(app, opts, snap)
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]

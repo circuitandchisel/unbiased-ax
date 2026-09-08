@@ -50,6 +50,16 @@ func runMenuGuardTests() {
     try expect(out.contains("dismissed an open menu") && out.contains("removed"), out)
   }
 
+  test("escape closing a menu says the menu closed, and does not ask for the key again") {
+    let b = FakeBackend()
+    b.extraNodes = openMenuNodes("Edit")
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.extraNodes = []
+    let out = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"escape"}}"#)
+    try expect(out.contains("menu closed and nothing else changed") && !out.contains("Send it again"), out)
+  }
+
   test("an action that changed something besides the menu is reported as what it did") {
     let b = FakeBackend()
     b.extraNodes = openMenuNodes("Edit")
