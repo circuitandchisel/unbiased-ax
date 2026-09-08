@@ -15,7 +15,7 @@ let package = Package(
     .target(
       name: "AXBridge",
       dependencies: ["AXModel"],
-      linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit")]
+      linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit"), .linkedFramework("ScreenCaptureKit")]
     ),
     .executableTarget(name: "unbiased-ax", dependencies: ["AXModel", "AXBridge"]),
     // CommandLineTools ships neither XCTest nor Swift Testing, so tests are an

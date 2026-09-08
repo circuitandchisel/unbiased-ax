@@ -16,6 +16,24 @@ struct LiveSource: ElementSource {
   var extraWindows: [AXElement] = []
   /// UNBIASED_AX_DEBUG=1 logs every AX read failure to stderr with its code.
   static let debug = ProcessInfo.processInfo.environment["UNBIASED_AX_DEBUG"] == "1"
+  /// Debug lines go to stderr AND, with UNBIASED_AX_DEBUG=1, to a file: the
+  /// app that spawns the bridge is itself launched through `open`, which
+  /// discards its console, so stderr alone told us nothing about a launch.
+  static func trace(_ line: String) {
+    guard debug else { return }
+    let stamped = "\(Self.stamp()) \(line)\n"
+    FileHandle.standardError.write("[ax] \(stamped)".data(using: .utf8)!)
+    if let h = FileHandle(forWritingAtPath: "/tmp/unbiased-ax-bridge.log") ?? Self.createLog() {
+      h.seekToEndOfFile(); h.write(stamped.data(using: .utf8)!); h.closeFile()
+    }
+  }
+  private static func createLog() -> FileHandle? {
+    FileManager.default.createFile(atPath: "/tmp/unbiased-ax-bridge.log", contents: nil)
+    return FileHandle(forWritingAtPath: "/tmp/unbiased-ax-bridge.log")
+  }
+  private static func stamp() -> String {
+    let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f.string(from: Date())
+  }
 
   static let wanted: [String] = [
     kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute,

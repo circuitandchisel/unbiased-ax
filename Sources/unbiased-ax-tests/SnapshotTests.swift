@@ -17,9 +17,32 @@ func runSnapshotTests() {
     let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
     try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "Actions", "OK"])
   }
-  test("zero-size elements are dropped along with their subtree") {
-    let hidden = FakeNode("w/h", Attributes(role: "group", width: 0, height: 0), [button("w/h/x", "X")])
+  test("a zero-size LEAF is dropped: nothing is there to see") {
+    let hidden = FakeNode("w/h", Attributes(role: "button", title: "Ghost", width: 0, height: 0), [])
     let root = group("w", [hidden, button("w/ok", "OK")], title: "Save")
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
+    try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "OK"])
+  }
+  test("a zero-size CONTAINER hoists its children instead of taking them with it") {
+    // Figma reports its right-sidebar wrapper as 1470x0 with a real 241x885
+    // panel inside. Dropping the subtree lost every inspector field in the
+    // app — X, Y, W, H, opacity, every fill swatch — and a task spent 33
+    // minutes concluding the panel was not exposed at all.
+    let wrapper = FakeNode("w/side", Attributes(role: "group", title: "Right sidebar", width: 1470, height: 0),
+                           [button("w/side/x", "X-position")])
+    let root = group("w", [wrapper, button("w/ok", "OK")], title: "Save")
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
+    try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "X-position", "OK"],
+                    "the panel's contents survive; the wrapper itself says nothing and is not kept")
+  }
+  test("a genuinely hidden subtree still disappears, one node at a time") {
+    // display:none reports zero for the children too, so each is dropped on
+    // its own merits and the original rule's intent is preserved.
+    let ghost = FakeNode("w/h", Attributes(role: "group", width: 0, height: 0),
+                         [FakeNode("w/h/x", Attributes(role: "button", title: "X", width: 0, height: 0), [])])
+    let root = group("w", [ghost, button("w/ok", "OK")], title: "Save")
     var reg = IdRegistry()
     let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init())
     try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "OK"])

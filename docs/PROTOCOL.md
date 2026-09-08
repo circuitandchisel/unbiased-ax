@@ -13,13 +13,31 @@ Three rules the model must know:
    later hits the same element or is refused with `no_such_element` — never a
    different element. An element absent from one snapshot and back in the next
    gets a new id.
-2. **`tree` returns a diff after the first call** for an app, unless
+2. **An id the app rebuilt is re-found.** Ids are element identities, so a
+   control torn down and rebuilt gets a new one. When an action names an id the
+   latest snapshot no longer has, the bridge matches what that id described
+   (role, title, value) against the snapshot: exactly one match is acted on and
+   the result carries `refoundId` and a `note`. Zero matches, several matches,
+   or a control with neither title nor value is refused as before.
+3. **The same action, after it changed nothing, is refused once.** An action
+   that was accepted and moved nothing cannot move anything on a second try, so
+   the identical verb on the identical element is declined with a pointer at a
+   different path. An action that DID change something may be repeated freely,
+   and `key` is exempt entirely: an app that does not expose its selection
+   makes every arrow key look like a no-op.
+4. **`tree` returns a diff after the first call** for an app, unless
    `"full":true`. `~` changed, `+` added, `- removed: 2-4, 9`. `(no changes)`
    when nothing moved. `find`, `launch` and every action reset the baseline.
-3. **Every action waits for the app to react** before reporting: at least 0.6s,
-   at most 1.5s. An action that changes nothing pays the full 1.5s. The first
-   action on an app never read has no baseline: it returns at once, and `diff`
-   is the full tree.
+5. **Every action waits for the app to react** before reporting, unless it says
+   `"settle": false`: at least 0.6s,
+   at most 1.5s. An action that changes nothing pays the full 1.5s. A tree that
+   has lost at least ten nodes AND a tenth of itself since the action is
+   treated as in transition (a result list that collapsed before its place card
+   rendered) and waits up to 3.5s for what replaces it. Both thresholds matter:
+   a bare "fewer nodes" test also fired on every Figma selection change and
+   closing panel, where nothing more was coming, and cost 94 seconds of waiting
+   in one task. The result carries `waitedMs`. The first action on an app
+   never read has no baseline: it returns at once, and `diff` is the full tree.
 
 ## Spaces
 
@@ -45,6 +63,20 @@ a long-lived bridge; call `hello` again to see it. Deciding it is budgeted at
 five seconds, paid by the first trusted call; one slow app can stretch it by a
 single read.
 
+With Stage Manager on, macOS parks every inactive app's window into the side strip as a thumbnail (measured: 108x104 while the Accessibility API reports 1024x768). A thumbnail does not hit-test, so `press` on list rows, card buttons and tabs is accepted and does nothing, and `screenshot` of that window is blank. Posted keys and menu bar items are unaffected. An action that changes nothing in that state carries a `hint` saying so and naming the paths that work. `windows` marks such a window `[parked]` and sets `parked: true`, so the state is visible before anything is tried. Readable and interactable are separate properties here and only the second one fails: the tree is exact, the presses are not. One flag says that, and a caller wanting the distinction reads it as "readable, since you have a tree at all, and not interactable while `parked` is true". And because guidance was measured to lose — the hint, the raise description and the bundled skill all said not to raise, and six runs raised anyway — the FIRST `raise` while a window is parked is refused, naming the keyboard route instead. The decision is the window's state at that moment, not what the previous action did: an earlier version armed on a dead action and disarmed on a successful one, so the keyboard workaround switched the guard off at the moment it worked. Asking a second time goes through, and un-parking re-arms it for the next episode, so a caller that means it is not blocked; only the reflex is.
+
+`screenshot` photographs a window on another Space as well (measured: Maps' UI came back in 72ms with Brave still frontmost). What the app does not draw while hidden is black in the picture; controls and text are not.
+
+A zero width or height hides an element only when it has no children. A
+container that reports zero and still has children is a layout wrapper, and its
+children are hoisted to its depth: measured, Figma labels a group "Right
+sidebar" at 1470x0 whose child panel is a real 241x885, and dropping that
+subtree removed every inspector field in the app — position, size, opacity and
+every fill swatch — from every tree ever taken of it, while "Left sidebar" at
+57x885 came through. Genuinely hidden content reports zero for its children
+too, so it still disappears, one node at a time. The check runs before the
+depth cap, which is why a larger `depth` never recovered any of it.
+
 ## Methods
 
 | method | params | result |
@@ -55,12 +87,45 @@ single read.
 | `tree` | `app`, `depth?`(14), `maxElements?`(1500), `interactive?`, `web?` (Chromium page content, opt-in, sticky for that process), `geometry?`, `full?` | `{tree|diff, count, truncated, offscreen, hint?}` |
 | `find` | `app`, `role?` (exact), `title?` (substring, also matches value), plus the `tree` options | `{matches:[lines], count, offscreen, hint?}` — a search, not a dump |
 | `act` | `app`, `id`, `action` (`press`, `confirm` — commits a text field —, `raise`, `show menu`, `focus`, or any action shown in braces), `keepFront?` (default false) | `{ok, diff}` |
-| `setValue` | `app`, `id`, `value`, `keepFront?` (default false) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox |
-| `key` | `app`, `key` (`return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right`), `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid |
+| `setValue` | `app`, `id`, `value`, `keepFront?` (default false), `verify?` (default true) | `{ok, diff}` — focuses the element first; it does not commit — follow with `key return` for an omnibox. The value is read back unless `verify` is false |
+| `key` | `app`, `key` — one letter `a-z`, one digit, or `return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right` — plus `modifiers?` (`command`, `shift`, `option`, `control`) and `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid, so it reaches a background app on any Space. Letters exist for tool shortcuts: a design app's tools have no elements, and Figma's pen is `p` and nothing else |
+| `type` | `app`, `text` (max 500 chars), `id?` (focus this element first) | `{ok, diff}` — the whole string as real unicode key events, posted to the pid so it reaches a background window. TEXT ENTRY, not shortcuts: `key` with modifiers is still how you send command+a. One call instead of one per character, because a design app's inspector wants four numbers per shape and `-19.6875` alone is nine keys |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
+| `pointer` | `app`, `id` (the element the fractions are measured in), `path?` (list of `{x, y}` FRACTIONS 0-1, max 60; omitted means the element's centre), `clicks?` (1-3; 2 is a double click, a different event that some controls honour where one does not), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
+| `screenshot` | `app`, `window?` (id from `windows`; default the focused window) | `{image, mime, width, height, window, onSpace, note?}` — JPEG (base64, `mime` says) of that one window, taken through ScreenCaptureKit wherever the window is, without raising anything; 1x; needs Screen Recording. Off-Space windows carry `note`: what the app only draws while visible (map tiles, video) may be blank |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
-| `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable |
+| `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
 | `icon` | `app` | `{png}` — the app's icon, base64 PNG, 64px |
+
+`setValue` accepts `verify: true`, which reads the value back and refuses when
+it can PROVE the write did not land. It is OPT-IN, and that matters: measured
+in Figma, an element the tree calls a `text field` (width, height, a hex box)
+honours a value write and reports it immediately, while a `stepper`
+(x-position, y-position, rotation) IGNORES it — the number appears in the box,
+the value never changes, the tree keeps reporting the old one, and it commits
+when focus leaves, which is how a 67 became 100100. Verifying by default
+therefore refused writes that had landed on other elements and taught the
+caller to distrust the bridge. For a stepper the working sequence is four
+steps in one batch: `pointer` the field, `key a +command`, `type` the number,
+`key return` — verified live. With `verify: true` it Two proofs, both measured in
+Figma: the field is a number that differs beyond rounding (a width still
+holding `120` given `180` came back `120180`, and seventeen coordinates were
+computed on top of it), or the old text is still in front of what was written.
+Everything else passes, because a field that reformats what it stored is
+working: `160.3125` displayed as `160.31`, `100` as `100%`, an element with no
+value at all. The refusal names the wanted and actual values and hands over the
+select-all-then-type call. It throws BEFORE the snapshot, so the diff baseline
+is untouched and the next read still shows what the bad write did. `verify:
+false` skips the read.
+
+Every action also accepts `settle: false`, which returns `{ok, settled:false}`
+the moment the app accepts it: no wait, no snapshot, and the diff baseline left
+where it was. It is for the middle of a known sequence — five inspector fields
+set on one shape — where only the last step's diff is read; the closing action
+settles as usual and its diff then covers the whole run. Measured on a Figma
+icon built out of inspector fields: 372 actions paid 253 seconds of settling, a
+fifth of the task. It does not skip any refusal: an unlisted action, a missing
+id and a repeat that changed nothing are declined exactly as before.
 
 Every action accepts the `tree` options (`depth`, `maxElements`, `interactive`,
 `web`; `geometry` is not one of them for actions) for the snapshot it takes

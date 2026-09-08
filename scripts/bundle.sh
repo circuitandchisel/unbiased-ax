@@ -8,6 +8,15 @@ cp .build/release/unbiased-ax dist/unbiased-ax
 # what lets a rebuilt binary keep the grant instead of asking again.
 codesign --force --sign - --identifier ai.unbiased.ax \
   --requirements '=designated => identifier "ai.unbiased.ax"' --timestamp=none dist/unbiased-ax
+# The window-capture helper is the SAME binary at a second path, with only its
+# linker signature. Deliberately no stable identifier: macOS keys privacy
+# grants (TCC) to a signed identity or, for ad-hoc tools, to the path — and
+# dist/unbiased-ax has its own record from the Accessibility grant, which
+# makes it its own client for Screen Recording too, a grant nobody gave it.
+# Measured: ScreenCaptureKit from that path stalls or returns blank frames,
+# while the identical binary at any other path is attributed to the app that
+# spawned it — which has Screen Recording — and answers in ~100ms.
+cp .build/release/unbiased-ax dist/unbiased-ax-capture
 version=$(git describe --tags --always 2>/dev/null || echo 0.1.0)
 cat > dist/manifest.json <<JSON
 {
