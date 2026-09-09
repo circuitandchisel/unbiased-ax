@@ -130,6 +130,16 @@ final class FakeBackend: Backend {
   /// Where keyboard focus "is". A field by default, so free typing lands.
   var focusedControlValue: (role: String, title: String?)? = (role: "text field", title: "Address")
   func focusedControl(app: String) throws -> (role: String, title: String?)? { focusedControlValue }
+  var menuEntries: [MenuEntry] = [
+    MenuEntry(path: ["View", "Show/Hide UI"], shortcut: "⌘\\"),
+    MenuEntry(path: ["View", "Zoom to Selection"], shortcut: "⇧2"),
+    MenuEntry(path: ["View", "Full Screen Tile"], enabled: false),
+    MenuEntry(path: ["Edit", "Duplicate"], shortcut: "⌘D"),
+    MenuEntry(path: ["Object", "Duplicate"]),
+  ]
+  var pressedMenus: [[String]] = []
+  func menuItems(app: String) throws -> [MenuEntry] { menuEntries }
+  func pressMenuItem(app: String, path: [String], keepFront: Bool) throws { pressedMenus.append(path) }
   var clickCounts: [Int] = []
   var keepFrontSeen: [Bool] = []
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {

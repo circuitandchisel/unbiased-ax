@@ -118,6 +118,18 @@ public struct PointerOutcome {
   public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil) { self.landed = landed; self.skipped = skipped; self.blocked = blocked }
 }
 
+/// One command in the app's menu bar, read without opening a menu.
+public struct MenuEntry: Equatable {
+  /// Menu titles from the top down, the command last: ["View", "Show/Hide UI"].
+  public var path: [String]
+  /// The key equivalent as the menu shows it, e.g. "⌘\\", or nil.
+  public var shortcut: String?
+  public var enabled: Bool
+  public init(path: [String], shortcut: String? = nil, enabled: Bool = true) { self.path = path; self.shortcut = shortcut; self.enabled = enabled }
+  public var title: String { path.last ?? "" }
+  public var joined: String { path.joined(separator: " > ") }
+}
+
 public enum HitRelation: Equatable {
   /// The anchor or something inside it: its reported bounds are honest.
   case inside
@@ -204,6 +216,13 @@ public protocol Backend: AnyObject {
   /// The element holding keyboard focus, as its role and title, or nil when the
   /// app reports none. Typed text goes wherever this is.
   func focusedControl(app: String) throws -> (role: String, title: String?)?
+  /// Every command in the app's menu bar, read from the CLOSED menus — no menu
+  /// opens, nothing is pressed. Measured 2026-09-09: 420 items on a design
+  /// app, each with its key equivalent, in one pass.
+  func menuItems(app: String) throws -> [MenuEntry]
+  /// Run one menu command by its path. The app is activated first: a closed
+  /// item pressed in a background app returns success and does nothing.
+  func pressMenuItem(app: String, path: [String], keepFront: Bool) throws
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws
   /// The element's value as it stands now, for reading a `setValue` back. One
   /// attribute read, no tree walk — cheap enough to check every write, which

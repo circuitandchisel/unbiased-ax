@@ -92,6 +92,8 @@ depth cap, which is why a larger `depth` never recovered any of it.
 | `key` | `app`, `key` — one letter `a-z`, one digit, or `return`, `tab`, `escape`, `space`, `delete`, `up`, `down`, `left`, `right` — plus `modifiers?` (`command`, `shift`, `option`, `control`) and `id?` (focus this element first; without `id` the key lands wherever focus already is) | `{ok, diff}` — a real key event posted to the app's pid, so it reaches a background app on any Space. Letters exist for tool shortcuts: a design app's tools have no elements, and Figma's pen is `p` and nothing else |
 | `type` | `app`, `text` (max 500 chars), `id?` (focus this element first) | `{ok, diff}` — the whole string as real unicode key events, posted to the pid so it reaches a background window. TEXT ENTRY, not shortcuts: `key` with modifiers is still how you send command+a. One call instead of one per character, because a design app's inspector wants four numbers per shape and `-19.6875` alone is nine keys |
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
+| `menus` | `app`, `query?` | Without `query`: `{menus, count, hint}` — the top-level menu titles and how many commands the bar holds. With `query`: `{items, count}` — every command whose `Menu > Title` path contains it, as `View > Show/Hide UI  ⌘\` (disabled ones say so), at most 60. Read from the CLOSED menu bar: no menu opens, nothing is pressed |
+| `menu` | `app`, `item` (a title, or `Menu > Title` when the title is in several menus), `keepFront?` | `{ok, diff, ran, shortcut?}` — runs one menu command. The app is activated first, because a closed item pressed in a background app returns success and does nothing. A title found in two menus is refused naming both; a disabled one is refused saying so; an unknown one gets the nearest names |
 | `pointer` | `app`, `id` (the element the fractions are measured in), `path?` (list of `{x, y}` FRACTIONS 0-1, max 120 — without `hold` that is one CLICK per point, which is how an outline is traced with a pen tool; omitted means the element's centre), `clicks?` (1-3; 2 is a double click, a different event that some controls honour where one does not), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
 | `screenshot` | `app`, `window?` (id from `windows`; default the focused window) | `{image, mime, width, height, window, onSpace, note?}` — JPEG (base64, `mime` says) of that one window, taken through ScreenCaptureKit wherever the window is, without raising anything; 1x; needs Screen Recording. Off-Space windows carry `note`: what the app only draws while visible (map tiles, video) may be blank |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
@@ -149,6 +151,18 @@ on the id, or use the keyboard. The count is per app and is cleared by any
 pointer that lands, so a one-off miss never escalates. Measured the same day:
 three of these in ninety seconds against a panel that hit-tests nowhere, and
 the caller answered the repeated sentence with two more clicks.
+
+The menu bar is the app's commands by name. Measured 2026-09-09: told to hide
+the app's panels before drawing, a caller pressed Tab — the shortcut for that
+in some other design app — and the toolbar it meant to avoid ended its path at
+point 43. The command it wanted was in the menu bar the whole time, with its
+real key beside it: View > Show/Hide UI, ⌘\. Menus are native AppKit even in
+an Electron app, so the closed bar enumerates completely — 420 items on that
+app, in one pass — which is what `menus` returns, and `menu` runs one by name
+instead of a guessed shortcut. One measured wrinkle shapes `menu`: pressing a
+closed item while another app is frontmost returns success and changes
+nothing (an Electron menu action goes to the focused window, and there is
+none), so the app is activated first.
 
 A click path is checked at EVERY point, not only its first, before anything is
 posted, and checked again point by point as it is clicked. A drag is one

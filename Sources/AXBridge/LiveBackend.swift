@@ -435,6 +435,106 @@ public final class LiveBackend: Backend {
     return false
   }
 
+  // ── Menu bar ───────────────────────────────────────────────────────────────
+  // Measured 2026-09-09: told to hide the app's panels before drawing, a caller
+  // pressed Tab — that is the shortcut in some OTHER design app — and the
+  // toolbar it meant to avoid ended its path. The command was in the menu bar
+  // the whole time, with its real shortcut beside it. Menus are native AppKit
+  // even in an Electron app, so the closed bar enumerates completely: 420
+  // items on that app, in one pass, no menu opened.
+
+  public func menuItems(app: String) throws -> [MenuEntry] {
+    let a = try resolve(app)
+    let root = appElement(a)
+    var barRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(root.ref, kAXMenuBarAttribute as CFString, &barRef) == .success, let bar = barRef,
+          CFGetTypeID(bar) == AXUIElementGetTypeID() else {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) exposes no menu bar")
+    }
+    var out: [MenuEntry] = []
+    Self.walkMenu(AXElement(ref: bar as! AXUIElement), path: [], depth: 0, into: &out)
+    return out
+  }
+
+  private static func menuChildren(_ e: AXElement) -> [AXElement] {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(e.ref, kAXChildrenAttribute as CFString, &v) == .success else { return [] }
+    return axElements(v).map { AXElement(ref: $0) }
+  }
+  private static func menuString(_ e: AXElement, _ attribute: String) -> String? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(e.ref, attribute as CFString, &v) == .success else { return nil }
+    return v as? String
+  }
+
+  private static func walkMenu(_ e: AXElement, path: [String], depth: Int, into out: inout [MenuEntry]) {
+    guard depth < 6 else { return }
+    for child in Self.menuChildren(e) {
+      let role = Self.menuString(child, kAXRoleAttribute) ?? ""
+      if role == "AXMenu" { walkMenu(child, path: path, depth: depth + 1, into: &out); continue }
+      guard let title = Self.menuString(child, kAXTitleAttribute), !title.isEmpty else { continue } // separators
+      let sub = Self.menuChildren(child)
+      let full = path + [title]
+      if !sub.isEmpty || role == "AXMenuBarItem" {
+        if role == "AXMenuItem", sub.isEmpty { out.append(entry(child, full)) }
+        walkMenu(child, path: full, depth: depth + 1, into: &out)
+        continue
+      }
+      out.append(entry(child, full))
+    }
+  }
+
+  private static func entry(_ item: AXElement, _ path: [String]) -> MenuEntry {
+    var shortcut: String? = nil
+    if let ch = Self.menuString(item, "AXMenuItemCmdChar"), !ch.isEmpty {
+      // AXMenuItemCmdModifiers: bit 0 shift, bit 1 option, bit 2 control, bit 3 "no command".
+      var modsRef: CFTypeRef?
+      let mods = (AXUIElementCopyAttributeValue(item.ref, "AXMenuItemCmdModifiers" as CFString, &modsRef) == .success ? modsRef as? Int : nil) ?? 0
+      shortcut = (mods & 4 != 0 ? "⌃" : "") + (mods & 2 != 0 ? "⌥" : "") + (mods & 1 != 0 ? "⇧" : "") + (mods & 8 == 0 ? "⌘" : "") + ch
+    }
+    var enRef: CFTypeRef?
+    let enabled = (AXUIElementCopyAttributeValue(item.ref, kAXEnabledAttribute as CFString, &enRef) == .success ? enRef as? Bool : nil) ?? true
+    return MenuEntry(path: path, shortcut: shortcut, enabled: enabled)
+  }
+
+  public func pressMenuItem(app: String, path: [String], keepFront: Bool) throws {
+    let a = try resolve(app)
+    let root = appElement(a)
+    var barRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(root.ref, kAXMenuBarAttribute as CFString, &barRef) == .success, let bar = barRef,
+          CFGetTypeID(bar) == AXUIElementGetTypeID() else {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) exposes no menu bar")
+    }
+    var cur = AXElement(ref: bar as! AXUIElement)
+    for title in path {
+      // Each level: the named child, looking through the AXMenu wrapper.
+      func named(_ e: AXElement) -> AXElement? {
+        for c in Self.menuChildren(e) {
+          if Self.menuString(c, kAXRoleAttribute) == "AXMenu" { if let f = named(c) { return f }; continue }
+          if Self.menuString(c, kAXTitleAttribute) == title { return c }
+        }
+        return nil
+      }
+      guard let next = named(cur) else { throw BridgeError.actionFailed("no menu item \"\(title)\" under \(path.joined(separator: " > "))") }
+      cur = next
+    }
+    try keepingFront(keepFront) {
+      // Measured 2026-09-09: pressing a closed item while another app is
+      // frontmost returns success and changes nothing — an Electron menu
+      // action goes to the focused window, and there is none. Active, it works.
+      if !a.isActive {
+        a.activate(options: [])
+        usleep(350_000)
+      }
+      let err = AXUIElementPerformAction(cur.ref, kAXPressAction as CFString)
+      switch err {
+      case .success: return
+      case .cannotComplete: throw BridgeError.timeout("menu command \(path.joined(separator: " > "))")
+      default: throw BridgeError.actionFailed("menu command \(path.joined(separator: " > ")) failed (AXError \(err.rawValue))")
+      }
+    }
+  }
+
   public func focusedControl(app: String) throws -> (role: String, title: String?)? {
     let a = try resolve(app)
     let root = appElement(a)

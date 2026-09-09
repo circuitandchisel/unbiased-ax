@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -151,6 +151,50 @@ public final class Dispatcher {
       }
       var out: [String: Any] = ["matches": hits.map { Formatter.line($0, geometry: geometry) }, "count": hits.count]
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
+      return out
+    case "menus":
+      // The app's commands by name, from the CLOSED menu bar. Measured
+      // 2026-09-09: asked to hide the panels before drawing, a caller pressed
+      // Tab — another app's shortcut — and the toolbar it meant to avoid ended
+      // its path. The command and its real key were in the menu bar all along.
+      let entries = try backend.menuItems(app: app)
+      guard let q = (p["query"] as? String)?.lowercased(), !q.isEmpty else {
+        var seen: [String] = []
+        for e in entries where !seen.contains(e.path[0]) { seen.append(e.path[0]) }
+        return ["menus": seen, "count": entries.count,
+                "hint": "\(entries.count) commands in \(seen.count) menus. Pass query to list the ones whose name or menu contains it, then run one with menu {item}."]
+      }
+      let hits = entries.filter { $0.joined.lowercased().contains(q) }
+      let shown = hits.prefix(Self.maxMenuMatches)
+      var out: [String: Any] = ["items": shown.map(Self.menuLine), "count": hits.count]
+      if hits.count > shown.count { out["hint"] = "\(hits.count - shown.count) more; narrow the query." }
+      return out
+    case "menu":
+      // Run one command by its title, or by "Menu > Title" when the title is
+      // in more than one menu. Activates the app: a closed item pressed in a
+      // background app succeeds and does nothing.
+      let want = try string(p, "item").lowercased()
+      let entries = try backend.menuItems(app: app)
+      let exact = entries.filter { $0.title.lowercased() == want || $0.joined.lowercased() == want }
+      let candidates = exact.isEmpty ? [] : exact
+      if candidates.isEmpty {
+        let near = entries.filter { $0.joined.lowercased().contains(want) }.prefix(8).map(Self.menuLine)
+        throw BridgeError.badParams(near.isEmpty
+          ? "No menu command named \"\(p["item"] as? String ?? want)\". Call menus with a query to see what this app offers."
+          : "No menu command named exactly \"\(p["item"] as? String ?? want)\". Close: \(near.joined(separator: "; ")). Pass the exact title, or \"Menu > Title\".")
+      }
+      if candidates.count > 1 {
+        throw BridgeError.badParams("\"\(candidates[0].title)\" is in \(candidates.count) menus: \(candidates.map(\.joined).joined(separator: ", ")). Pass the full \"Menu > Title\" to say which.")
+      }
+      let target = candidates[0]
+      guard target.enabled else {
+        throw BridgeError.actionFailed("Menu command \(target.joined) is disabled right now, so pressing it would do nothing. It depends on the app's state — a selection, a mode — so make that true first.")
+      }
+      let key = Self.actionKey("menu", id: 0, detail: target.joined)
+      try backend.pressMenuItem(app: app, path: target.path, keepFront: (p["keepFront"] as? Bool) ?? false)
+      var out = (try afterAction(app, p, actionKey: key)) as? [String: Any] ?? [:]
+      out["ran"] = target.joined
+      if let sc = target.shortcut { out["shortcut"] = sc }
       return out
     case "act":
       let asked = try int(p, "id"); let action = try string(p, "action")
@@ -364,7 +408,7 @@ public final class Dispatcher {
         switch rel {
         case .inside, .container: continue
         case .unrelated(let role, let title):
-          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): something sits over that part of the surface. Nothing was clicked. Scroll, pan or zoom so the whole shape is clear of it, or hide the app's panels and toolbars, then send the path again.")
+          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): something sits over that part of the surface. Nothing was clicked. Scroll, pan or zoom so the whole shape is clear of it, or hide the app's panels and toolbars — the app's menu bar has a command for that; run it by name with menu rather than guessing a shortcut — then send the path again.")
         case .nothing:
           throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) has nothing under it: that part of the path is outside the window. Nothing was clicked. Keep every point inside the element you aimed at.")
         }
@@ -380,7 +424,7 @@ public final class Dispatcher {
       // stopped in front of it; say where the drawing is left off.
       if let b = outcome.blocked {
         let done = outcome.landed.count
-        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll, pan or zoom so the rest of the shape is clear of it, or hide the app's panels and toolbars, then continue from point \(b.index + 1) — or, if the app does not join a continued path, clear the surface first and draw the whole shape again in one call.")
+        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll, pan or zoom so the rest of the shape is clear of it, or hide the app's panels and toolbars (the menu bar has a command for that; run it by name with menu, do not guess a shortcut), then continue from point \(b.index + 1) — or, if the app does not join a continued path, clear the surface first and draw the whole shape again in one call.")
       }
       // Consecutive points fell on the same pixel and were clicked once. Said,
       // so the caller does not read a shorter `at` as a lost click.
@@ -468,6 +512,12 @@ public final class Dispatcher {
   /// without spending a second round-trip to look.
   /// How many removed nodes a delete names. Enough to see what went; not a list.
   static let namedRemovals = 6
+  /// How many menu commands one `menus` query lists. A query that matches more
+  /// is too broad to act on anyway.
+  static let maxMenuMatches = 60
+  static func menuLine(_ e: MenuEntry) -> String {
+    e.joined + (e.shortcut.map { "  \($0)" } ?? "") + (e.enabled ? "" : "  (disabled)")
+  }
 
   /// `watch`: a snapshot taken just before a step the caller asked not to
   /// settle, but which the bridge watches anyway (a delete outside a field).
