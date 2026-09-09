@@ -380,7 +380,7 @@ public final class Dispatcher {
       // stopped in front of it; say where the drawing is left off.
       if let b = outcome.blocked {
         let done = outcome.landed.count
-        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll, pan or zoom so the rest of the shape is clear of it, or hide the app's panels and toolbars, then continue from point \(b.index + 1).")
+        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll, pan or zoom so the rest of the shape is clear of it, or hide the app's panels and toolbars, then continue from point \(b.index + 1) — or, if the app does not join a continued path, clear the surface first and draw the whole shape again in one call.")
       }
       // Consecutive points fell on the same pixel and were clicked once. Said,
       // so the caller does not read a shorter `at` as a lost click.
