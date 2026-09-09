@@ -97,7 +97,10 @@ final class FakeBackend: Backend {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
     clickCounts.append(clicks)
-    return path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
+    let pts = path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
+    // Same rule as the live backend: single clicks are paced, and a repeated
+    // pixel is not clicked twice.
+    return (!hold && clicks == 1) ? ClickPacing.plan(pts).clicks.map(\.point) : pts
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
   func typeText(app: String, text: String, focusId: Int?) throws {

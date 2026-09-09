@@ -150,6 +150,18 @@ pointer that lands, so a one-off miss never escalates. Measured the same day:
 three of these in ninety seconds against a panel that hit-tests nowhere, and
 the caller answered the repeated sentence with two more clicks.
 
+A click path is paced so the app never sees a double-click the caller did not
+ask for. Two clicks within the double-click radius and interval are one
+double-click to whoever counts them, and a pen tool ends its path on one.
+Measured 2026-09-09: a 91-point trace had twelve consecutive points within six
+screen points, one pair on the same pixel, posted ~200ms apart against a 500ms
+interval; the outline came out as eleven open fragments and the caller
+abandoned the tool. So with `clicks` 1 and no `hold`, a point within 8 screen
+points of the previous click waits out the system double-click interval before
+it is posted, and a point on the same pixel is not clicked twice at all — the
+reply's `at` lists what was clicked, and a `note` says how many were skipped and
+why. A caller that wants a double-click still asks for `clicks: 2`.
+
 An open menu owns the pointer. While the tree shows one — a `menu bar item`
 marked `[selected]` with its `menu item`s beneath it, or a context menu's items
 — `pointer` refuses with `action_failed` naming the menu, because the first

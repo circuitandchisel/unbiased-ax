@@ -375,6 +375,13 @@ public final class Dispatcher {
                                        hold: hold, modifiers: try modifierList(p), clicks: clicks)
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }
+      // Fewer clicks than points: consecutive points fell on the same pixel,
+      // and the backend clicked that pixel once. Said, so the caller does not
+      // read a shorter `at` as a lost click.
+      if !hold, clicks == 1, landed.count < aim.count {
+        let n = aim.count - landed.count
+        out["note"] = "\(n) point\(n == 1 ? "" : "s") fell on the same pixel as the click before and \(n == 1 ? "was" : "were") not clicked twice: a repeated click in one spot is a double-click, which ends a drawn path. Nearby points were spaced in time for the same reason."
+      }
       return out
     case "values":
       // Read back a handful of ids in one call: the value is a fresh attribute

@@ -346,6 +346,21 @@ public final class LiveBackend: Backend {
       post(.leftMouseDown, points[0])
       for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
       post(.leftMouseUp, points[points.count - 1])
+    } else if clicks == 1 {
+      // Single clicks along a path — the shape of pen-tool tracing. Two clicks
+      // within the double-click radius and interval ARE a double-click, whoever
+      // counts them, and a pen tool ends its path on one. See ClickPacing for
+      // the measurement (eleven fragments from one 91-point trace). A point
+      // within the radius waits out the interval; a point on the same pixel is
+      // not clicked twice at all, and the caller is told how many.
+      let plan = ClickPacing.plan(points)
+      for step in plan.clicks {
+        if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
+        post(.mouseMoved, step.point)
+        post(.leftMouseDown, step.point)
+        post(.leftMouseUp, step.point)
+      }
+      return plan.clicks.map(\.point)
     } else {
       for pt in points {
         post(.mouseMoved, pt)
