@@ -8,9 +8,13 @@ public final class Dispatcher {
   public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
-  /// How many points one pointer call may carry. A logo outline is a dozen; a
-  /// thousand would be a way to hold the desktop tools for a minute.
-  public static let maxPathPoints = 60
+  /// How many points one pointer call may carry. Without `hold` a path is a
+  /// CLICK per point, which is how an outline is drawn with a pen tool — so the
+  /// cap has to fit a traced silhouette, not just a gesture. Measured
+  /// 2026-09-09: a comparison run reduced a logo's boundary to 77 points and
+  /// drew it in one pass; at 60 that would have needed splitting. A thousand
+  /// would still be a way to hold the desktop tools for a minute.
+  public static let maxPathPoints = 120
   /// How many ids one `values` call may read back: every field on a shape,
   /// with room to spare, and not a way to walk the tree one attribute at a time.
   public static let maxValueIds = 40
