@@ -352,36 +352,43 @@ public final class Dispatcher {
       // different node, the click selected the wrong object, and a dozen turns
       // went on finding out. One-sided like every guard here: only something
       // provably unrelated refuses; a container of the anchor proves nothing.
-      switch try backend.pointerHit(app: app, id: anchor, path: aim) {
-      case .inside, .container:
-        break
-      case .unrelated(let role, let title):
-        throw BridgeError.actionFailed("The first point lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): the element's reported position does not match what is on screen. Nothing was clicked. Read the app again and aim at what the tree now shows there.")
-      case .nothing:
-        // Measured 2026-09-09: three of these in ninety seconds while the
-        // caller tried to click a row in a panel that reports nothing
-        // anywhere. The same sentence three times taught it nothing, and it
-        // spent two more turns clicking. So the second one says the surface
-        // itself is the problem and names the routes that do not need a point.
-        let missed = (blindPoints[app] ?? 0) + 1
-        blindPoints[app] = missed
-        if missed == 1 {
-          throw BridgeError.actionFailed("The app reports nothing at the first point, so a click would land on empty space or another window. Nothing was clicked. Read the app again.")
+      // A drag is one gesture from its first point, so only that point can
+      // land wrong. A click path is a click at EVERY point, and each one can:
+      // measured 2026-09-09, a floating toolbar sat over the bottom of a
+      // drawing surface and the trace's last dozen clicks pressed its buttons.
+      // Checked before anything is posted, so a bad point costs nothing.
+      let toCheck = hold ? Array(aim.prefix(1)) : aim
+      for (i, pt) in toCheck.enumerated() {
+        let rel = try backend.pointerHit(app: app, id: anchor, point: pt)
+        if i == 0 { try Self.checkFirstPoint(rel, anchor: anchor, app: app, blindPoints: &blindPoints); continue }
+        switch rel {
+        case .inside, .container: continue
+        case .unrelated(let role, let title):
+          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): something sits over that part of the surface. Nothing was clicked. Scroll or pan so the whole shape is clear of it, then send the path again.")
+        case .nothing:
+          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) has nothing under it: that part of the path is outside the window. Nothing was clicked. Keep every point inside the element you aimed at.")
         }
-        throw BridgeError.actionFailed("The app reports nothing at the first point. Nothing was clicked. This is the \(Self.ordinal(missed)) time in a row this app does not report what is under a point, so aiming by fraction will not reach anything here however the numbers are chosen. Use a route that needs no point: find the thing by name and act on the id that comes back, or drive it from the keyboard.")
       }
       blindPoints[app] = 0 // it can hit-test after all; a one-off miss must not escalate
-      let landed = try backend.pointer(app: app, id: anchor, path: aim,
-                                       hold: hold, modifiers: try modifierList(p), clicks: clicks)
+      let outcome = try backend.pointer(app: app, id: anchor, path: aim,
+                                        hold: hold, modifiers: try modifierList(p), clicks: clicks)
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
-      out["at"] = landed.map { ["x": Int($0.x), "y": Int($0.y)] }
-      // Fewer clicks than points: consecutive points fell on the same pixel,
-      // and the backend clicked that pixel once. Said, so the caller does not
-      // read a shorter `at` as a lost click.
-      if !hold, clicks == 1, landed.count < aim.count {
-        let n = aim.count - landed.count
-        out["note"] = "\(n) point\(n == 1 ? "" : "s") fell on the same pixel as the click before and \(n == 1 ? "was" : "were") not clicked twice: a repeated click in one spot is a double-click, which ends a drawn path. Nearby points were spaced in time for the same reason."
+      out["at"] = outcome.landed.map { ["x": Int($0.x), "y": Int($0.y)] }
+      var notes: [String] = []
+      // A control appeared under the path AFTER the up-front check passed —
+      // a floating toolbar the app raises once drawing begins. The clicks
+      // stopped in front of it; say where the drawing is left off.
+      if let b = outcome.blocked {
+        let done = outcome.landed.count
+        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll or pan so the rest of the shape is clear of it, then continue from point \(b.index + 1).")
       }
+      // Consecutive points fell on the same pixel and were clicked once. Said,
+      // so the caller does not read a shorter `at` as a lost click.
+      if outcome.skipped > 0 {
+        let n = outcome.skipped
+        notes.append("\(n) point\(n == 1 ? "" : "s") fell on the same pixel as the click before and \(n == 1 ? "was" : "were") not clicked twice: a repeated click in one spot is a double-click, which ends a drawn path. Nearby points were spaced in time for the same reason.")
+      }
+      if !notes.isEmpty { out["note"] = notes.joined(separator: " ") }
       return out
     case "values":
       // Read back a handful of ids in one call: the value is a fresh attribute
@@ -702,6 +709,29 @@ public final class Dispatcher {
       touched += 1
     }
     return touched > 0
+  }
+
+  /// The first point's verdict, with the messages and the blind-point count
+  /// that were measured into them (see HitTests). Kept exactly as they were.
+  private static func checkFirstPoint(_ rel: HitRelation, anchor: Int, app: String, blindPoints: inout [String: Int]) throws {
+    switch rel {
+    case .inside, .container:
+      return
+    case .unrelated(let role, let title):
+      throw BridgeError.actionFailed("The first point lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): the element's reported position does not match what is on screen. Nothing was clicked. Read the app again and aim at what the tree now shows there.")
+    case .nothing:
+      // Measured 2026-09-09: three of these in ninety seconds while the caller
+      // tried to click a row in a panel that reports nothing anywhere. The
+      // same sentence three times taught it nothing, and it spent two more
+      // turns clicking. So the second one says the surface itself is the
+      // problem and names the routes that do not need a point.
+      let missed = (blindPoints[app] ?? 0) + 1
+      blindPoints[app] = missed
+      if missed == 1 {
+        throw BridgeError.actionFailed("The app reports nothing at the first point, so a click would land on empty space or another window. Nothing was clicked. Read the app again.")
+      }
+      throw BridgeError.actionFailed("The app reports nothing at the first point. Nothing was clicked. This is the \(ordinal(missed)) time in a row this app does not report what is under a point, so aiming by fraction will not reach anything here however the numbers are chosen. Use a route that needs no point: find the thing by name and act on the id that comes back, or drive it from the keyboard.")
+    }
   }
 
   static func ordinal(_ n: Int) -> String {

@@ -97,6 +97,27 @@ public func isUserWindow(width: Double, height: Double, layer: Int, onscreen: Bo
 }
 
 /// Where a pointer gesture would begin, as the app itself reports it.
+/// Where a click path stopped short: the first point that would have landed on
+/// a control the path was never aimed at, and what that control is. Measured
+/// 2026-09-09: a drawing app raised a floating toolbar over the bottom of the
+/// surface the moment the first point was placed, and the trace's last dozen
+/// clicks pressed its buttons instead.
+public struct PointerBlock: Equatable {
+  public var index: Int
+  public var role: String
+  public var title: String?
+  public init(index: Int, role: String, title: String?) { self.index = index; self.role = role; self.title = title }
+}
+
+/// What a pointer call actually did: the points that were clicked, how many
+/// were skipped as a repeat of the previous pixel, and whether it stopped short.
+public struct PointerOutcome {
+  public var landed: [CGPoint]
+  public var skipped: Int
+  public var blocked: PointerBlock?
+  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil) { self.landed = landed; self.skipped = skipped; self.blocked = blocked }
+}
+
 public enum HitRelation: Equatable {
   /// The anchor or something inside it: its reported bounds are honest.
   case inside
@@ -174,12 +195,12 @@ public protocol Backend: AnyObject {
   /// `clicks` is the click COUNT of each tap — 2 is a double click, which is a
   /// different event from two clicks in a row and is sometimes the only thing
   /// an app honours (measured: Figma's position steppers).
-  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint]
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome
   /// What the app says is under the FIRST point of this path, relative to the
   /// element the caller aimed inside. Asked before anything is posted: an
   /// element's reported bounds can lag what the app is drawing, and the only
   /// authority on what is actually at a point is the app's own hit test.
-  func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation
+  func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation
   /// The element holding keyboard focus, as its role and title, or nil when the
   /// app reports none. Typed text goes wherever this is.
   func focusedControl(app: String) throws -> (role: String, title: String?)?

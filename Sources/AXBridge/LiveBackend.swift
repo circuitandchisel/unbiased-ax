@@ -317,7 +317,7 @@ public final class LiveBackend: Backend {
   /// which means the window has to be where those coordinates are. A parked or
   /// off-Space window is refused rather than clicked at blindly, because the
   /// click would land on whatever is at that spot instead.
-  public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint] {
+  public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     let a = try resolve(app)
     let (_, el) = try element(app, id)
     guard let frame = Self.frame(of: el) else {
@@ -346,6 +346,7 @@ public final class LiveBackend: Backend {
       post(.leftMouseDown, points[0])
       for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
       post(.leftMouseUp, points[points.count - 1])
+      return PointerOutcome(landed: points)
     } else if clicks == 1 {
       // Single clicks along a path — the shape of pen-tool tracing. Two clicks
       // within the double-click radius and interval ARE a double-click, whoever
@@ -354,13 +355,26 @@ public final class LiveBackend: Backend {
       // within the radius waits out the interval; a point on the same pixel is
       // not clicked twice at all, and the caller is told how many.
       let plan = ClickPacing.plan(points)
-      for step in plan.clicks {
+      let root = appElement(a)
+      var landed: [CGPoint] = []
+      for (i, step) in plan.clicks.enumerated() {
+        // Every point was checked before the first click. Checked again here,
+        // because an app can raise a control over the surface the moment
+        // drawing begins — measured 2026-09-09, a floating toolbar appeared
+        // after the first pen point and the trace's last clicks pressed its
+        // buttons. The first point was already checked and is what put the
+        // control there; from the second on, a control under the point stops
+        // the path in front of it, and the caller is told where.
+        if i > 0, case .unrelated(let role, let title) = relation(at: step.point, anchor: el, anchorFrame: frame, root: root) {
+          return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title))
+        }
         if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
         post(.mouseMoved, step.point)
         post(.leftMouseDown, step.point)
         post(.leftMouseUp, step.point)
+        landed.append(step.point)
       }
-      return plan.clicks.map(\.point)
+      return PointerOutcome(landed: landed, skipped: plan.dropped)
     } else {
       for pt in points {
         post(.mouseMoved, pt)
@@ -374,15 +388,19 @@ public final class LiveBackend: Backend {
         }
       }
     }
-    return points
+    return PointerOutcome(landed: points)
   }
 
-  public func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation {
+  public func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
     let (a, el) = try element(app, id)
     // No usable frame: `pointer` reports that precisely; nothing to check here.
-    guard let frame = Self.frame(of: el), frame.width > 1, frame.height > 1, let first = path.first else { return .container }
-    let pt = CGPoint(x: frame.minX + frame.width * first.x, y: frame.minY + frame.height * first.y)
-    let root = appElement(a)
+    guard let frame = Self.frame(of: el), frame.width > 1, frame.height > 1 else { return .container }
+    let pt = CGPoint(x: frame.minX + frame.width * point.x, y: frame.minY + frame.height * point.y)
+    return relation(at: pt, anchor: el, anchorFrame: frame, root: appElement(a))
+  }
+
+  /// What the app says is under one screen point, relative to the anchor.
+  private func relation(at pt: CGPoint, anchor el: AXElement, anchorFrame frame: CGRect, root: AXElement) -> HitRelation {
     var hitRef: AXUIElement?
     let err = AXUIElementCopyElementAtPosition(root.ref, Float(pt.x), Float(pt.y), &hitRef)
     guard err == .success, let hitRef else { return .nothing }

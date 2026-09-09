@@ -92,15 +92,25 @@ final class FakeBackend: Backend {
   /// is fixed at 0,0 200x100 so a fraction maps to an obvious number.
   var pointerCalls: [(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String])] = []
   var pointerFails: String? = nil
-  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> [CGPoint] {
+  /// A control that appears under the path while it is being clicked, the way
+  /// a floating toolbar does: clicks stop before this index.
+  var pointerBlockAt: PointerBlock? = nil
+  func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     if let why = pointerFails { throw BridgeError.actionFailed(why) }
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
     clickCounts.append(clicks)
     let pts = path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
-    // Same rule as the live backend: single clicks are paced, and a repeated
-    // pixel is not clicked twice.
-    return (!hold && clicks == 1) ? ClickPacing.plan(pts).clicks.map(\.point) : pts
+    guard !hold, clicks == 1 else { return PointerOutcome(landed: pts) }
+    // Same rules as the live backend: single clicks are paced, a repeated
+    // pixel is not clicked twice, and a control appearing under the path stops it.
+    let plan = ClickPacing.plan(pts)
+    var landed = plan.clicks.map(\.point)
+    if let b = pointerBlockAt, b.index < landed.count {
+      landed = Array(landed.prefix(b.index))
+      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b)
+    }
+    return PointerOutcome(landed: landed, skipped: plan.dropped)
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
   func typeText(app: String, text: String, focusId: Int?) throws {
@@ -108,7 +118,15 @@ final class FakeBackend: Backend {
   }
   /// What the app "says" is under a pointer's first point. Honest by default.
   var pointerHitResult: HitRelation = .inside
-  func pointerHit(app: String, id: Int, path: [(x: Double, y: Double)]) throws -> HitRelation { pointerHitResult }
+  /// Per-point answers in the order the dispatcher asks; falls back to
+  /// `pointerHitResult` once exhausted. Lets a test put a control under the
+  /// third point of a path and nothing under the first two.
+  var pointerHitSequence: [HitRelation] = []
+  var pointerHitCalls = 0
+  func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
+    defer { pointerHitCalls += 1 }
+    return pointerHitCalls < pointerHitSequence.count ? pointerHitSequence[pointerHitCalls] : pointerHitResult
+  }
   /// Where keyboard focus "is". A field by default, so free typing lands.
   var focusedControlValue: (role: String, title: String?)? = (role: "text field", title: "Address")
   func focusedControl(app: String) throws -> (role: String, title: String?)? { focusedControlValue }

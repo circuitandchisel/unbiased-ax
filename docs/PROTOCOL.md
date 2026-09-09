@@ -150,6 +150,20 @@ pointer that lands, so a one-off miss never escalates. Measured the same day:
 three of these in ninety seconds against a panel that hit-tests nowhere, and
 the caller answered the repeated sentence with two more clicks.
 
+A click path is checked at EVERY point, not only its first, before anything is
+posted, and checked again point by point as it is clicked. A drag is one
+gesture from its first point, so only that point can land wrong; a click path
+is a click at each point, and each one can. Measured 2026-09-09: a drawing
+app raised a floating toolbar over the bottom of its surface the moment the
+first pen point was placed — after the first-point check had passed — and the
+trace's last dozen clicks pressed Bend and Cut instead of placing anchors. So
+a later point on a control refuses the whole path up front ("Point 63 of 89
+lands on button "Bend" … Nothing was clicked. Scroll or pan so the whole shape
+is clear of it"); and a control that appears under the path while it is being
+clicked stops the clicks in front of it, and the reply says "Clicked 62 of 89
+points, then stopped … what was drawn is still open at point 62 … continue
+from point 63". The check is one `AXUIElementCopyElementAtPosition` per point.
+
 A click path is paced so the app never sees a double-click the caller did not
 ask for. Two clicks within the double-click radius and interval are one
 double-click to whoever counts them, and a pen tool ends its path on one.

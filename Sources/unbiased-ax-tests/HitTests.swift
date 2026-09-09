@@ -76,6 +76,45 @@ func runHitTests() {
     }
   }
 
+  // Measured 2026-09-09: a drawing app raised a floating toolbar over the
+  // bottom of its surface the moment the first pen point was placed. The
+  // first-point check passed — the toolbar was not there yet — and the trace's
+  // last dozen clicks pressed Bend and Cut instead of placing anchors. Two
+  // rules follow: every point of a click path is checked before anything is
+  // posted, and every point is checked again as it is clicked.
+  test("a click path is checked at every point before anything is posted: a later point on a control refuses it all") {
+    let b = FakeBackend()
+    b.pointerHitSequence = [.container, .container, .unrelated(role: "button", title: "Bend")]
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":2,"path":[{"x":0.1,"y":0.1},{"x":0.5,"y":0.5},{"x":0.5,"y":0.95}]}}"#)
+    try expect(out.contains("action_failed") && out.contains("Point 3 of 3") && out.contains(#"button \"Bend\""#), out)
+    try expect(out.contains("Nothing was clicked") && out.contains("clear of it"), "says how to get past it: \(out)")
+    try expectEqual(b.pointerCalls.count, 0)
+  }
+
+  test("a drag is checked at its first point only: a drag across a control is still one gesture") {
+    let b = FakeBackend()
+    b.pointerHitSequence = [.inside, .unrelated(role: "button", title: "Bend")]
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":2,"hold":true,"path":[{"x":0.1,"y":0.1},{"x":0.5,"y":0.95}]}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.pointerCalls.count, 1)
+  }
+
+  test("a control that appears under the path while it is drawn stops the clicks there and says where the path is left open") {
+    let b = FakeBackend()
+    b.pointerBlockAt = PointerBlock(index: 2, role: "button", title: "Bend")
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":2,"path":[{"x":0.1,"y":0.1},{"x":0.3,"y":0.3},{"x":0.5,"y":0.95},{"x":0.9,"y":0.9}]}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expect(out.contains("Clicked 2 of 4 points") && out.contains("point 3") && out.contains(#"button \"Bend\""#), out)
+    try expect(out.contains("appeared") && out.contains("open at point 2") && out.contains("continue from point 3"), out)
+    try expectEqual(out.components(separatedBy: #"{"x":"#).count - 1, 2, "two clicks landed: \(out)")
+  }
+
   // Measured 2026-09-08: a coordinate typed after a click that had not focused
   // the field went to the canvas, where digits are shortcuts; two shapes came
   // out at 28% opacity and it took six turns to notice and repair.
