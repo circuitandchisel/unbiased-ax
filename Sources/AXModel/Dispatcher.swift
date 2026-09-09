@@ -364,7 +364,7 @@ public final class Dispatcher {
         switch rel {
         case .inside, .container: continue
         case .unrelated(let role, let title):
-          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): something sits over that part of the surface. Nothing was clicked. Scroll or pan so the whole shape is clear of it, then send the path again.")
+          throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): something sits over that part of the surface. Nothing was clicked. Scroll, pan or zoom so the whole shape is clear of it, or hide the app's panels and toolbars, then send the path again.")
         case .nothing:
           throw BridgeError.actionFailed("Point \(i + 1) of \(aim.count) has nothing under it: that part of the path is outside the window. Nothing was clicked. Keep every point inside the element you aimed at.")
         }
@@ -380,7 +380,7 @@ public final class Dispatcher {
       // stopped in front of it; say where the drawing is left off.
       if let b = outcome.blocked {
         let done = outcome.landed.count
-        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll or pan so the rest of the shape is clear of it, then continue from point \(b.index + 1).")
+        notes.append("Clicked \(done) of \(aim.count) points, then stopped: point \(b.index + 1) lands on \(b.role)\(b.title.map { " \"\($0)\"" } ?? ""), which appeared over the surface after the path began. Nothing from point \(b.index + 1) on was clicked, and what was drawn is still open at point \(done). Scroll, pan or zoom so the rest of the shape is clear of it, or hide the app's panels and toolbars, then continue from point \(b.index + 1).")
       }
       // Consecutive points fell on the same pixel and were clicked once. Said,
       // so the caller does not read a shorter `at` as a lost click.
