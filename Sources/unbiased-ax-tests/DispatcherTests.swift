@@ -80,7 +80,10 @@ final class FakeBackend: Backend {
   }
   var focused: [(app: String, id: Int)] = []
   var keyMods: [[String]] = []
+  /// When set, the next key press empties `extraNodes`: the app deleted them.
+  var keyRemovesExtra = false
   func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws {
+    if keyRemovesExtra { extraNodes = []; keyRemovesExtra = false }
     if let id = focusId { focused.append((app, id)) }
     keys.append((app, key))
     keyMods.append(modifiers)

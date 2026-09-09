@@ -183,8 +183,37 @@ public final class Dispatcher {
       // refusing the second one would break moving through a list — the very
       // path the parked-window advice sends callers down. The waste this rule
       // was built for was repeated PRESSES on dead controls, not keys.
+      // A bare digit is text, whatever the verb says. Measured twice, 2026-09-08:
+      // digits sent by key after a click that had not focused the field went to
+      // a canvas, where they are shortcuts, and two shapes came out at 28% and
+      // 40% opacity. Letters stay free: one-letter tool shortcuts are the point
+      // of this verb and are sent on purpose; a bare digit at a non-field has
+      // been measured as an accident twice and as intent never.
+      if asked == nil, mods.isEmpty, key.count == 1, key.first!.isNumber {
+        let focus = try backend.focusedControl(app: app)
+        guard let f = focus, Self.editableRoles.contains(f.role) else {
+          let what = focus.map { "\($0.role)\($0.title.map { " \"\($0)\"" } ?? "")" } ?? "no element"
+          throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: a digit sent there is a shortcut, not a value. Nothing was sent. To enter a number, use type with the field's id, or click the field first and check that it took focus.")
+        }
+      }
+      // A delete outside a text field removes OBJECTS, and a caller mid-sequence
+      // has asked not to look. Measured 2026-09-08: return, delete, return,
+      // delete in one unwatched batch; the second delete removed the frame the
+      // whole task lived in, the closing read showed "- removed: 859-880", and
+      // the caller wrote "the frame is clean now" and spent six minutes looking
+      // for it. So this one step is watched regardless: its own before/after,
+      // with the removed nodes named, and the baseline left alone so the
+      // closing read still shows the whole sequence.
+      var watch: Snapshot? = nil
+      if key == "delete", asked == nil, (p["settle"] as? Bool) == false {
+        let focus = try backend.focusedControl(app: app)
+        if focus.map({ !Self.editableRoles.contains($0.role) }) ?? true {
+          watch = try backend.snapshot(app: app, options: options(p))
+        }
+      }
       try backend.pressKey(app: app, key: key, modifiers: mods, focusId: focusId)
-      return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!), closing: key == "escape")
+      return try afterAction(app, p, refound: asked == focusId ? nil : (asked!, focusId!), closing: key == "escape",
+                             watch: watch, nameRemoved: key == "delete")
     case "type":
       // Text entry, not shortcuts. A whole string in one call, because a
       // design app's inspector wants four numbers per shape and one key per
@@ -405,7 +434,15 @@ public final class Dispatcher {
 
   /// Re-snapshot and return the diff: the model sees what its action did
   /// without spending a second round-trip to look.
-  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false) throws -> Any {
+  /// How many removed nodes a delete names. Enough to see what went; not a list.
+  static let namedRemovals = 6
+
+  /// `watch`: a snapshot taken just before a step the caller asked not to
+  /// settle, but which the bridge watches anyway (a delete outside a field).
+  /// The diff is that step's own before/after and the baseline is NOT moved.
+  /// `nameRemoved`: name the removed nodes, for a step whose job is removing.
+  private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false,
+                           watch: Snapshot? = nil, nameRemoved: Bool = false) throws -> Any {
     // `"settle": false` means the caller is mid-sequence and does not want a
     // diff for this step: do the action and return. Measured on a Figma icon
     // built out of inspector fields — 372 actions, 253 seconds of settle
@@ -413,7 +450,7 @@ public final class Dispatcher {
     // for a reaction nobody read, because the batch reports its NET effect at
     // the end. The baseline is deliberately left alone, so that closing read
     // measures the whole sequence rather than only its last step.
-    if (p["settle"] as? Bool) == false {
+    if (p["settle"] as? Bool) == false && watch == nil {
       return ["ok": true, "settled": false]
     }
     // Snapshot AFTER the app has had a chance to react, not the instant the
@@ -430,7 +467,7 @@ public final class Dispatcher {
     // How long the action waited for the app, so a caller's diagnostics can
     // say where a slow task spent its time.
     var waitedMs = 0
-    if let prev = baseline(app, opts) {
+    if let prev = watch ?? baseline(app, opts) {
       let started = Date()
       var stableLooks = 0
       // Settle policy, set from measurement rather than taste. Typing into
@@ -482,7 +519,13 @@ public final class Dispatcher {
       }
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
-    var diff = baseline(app, opts).map { Differ.render(from: $0, to: snap, geometry: false) } ?? Formatter.render(snap, geometry: false)
+    let names = nameRemoved ? Self.namedRemovals : 0
+    if let watch {
+      let own = Differ.render(from: watch, to: snap, geometry: false, nameRemoved: names)
+      return ["ok": true, "settled": true, "waitedMs": waitedMs, "diff": own,
+              "watched": "a delete outside a text field removes objects, so this step was watched on its own; the closing read still covers the whole sequence"]
+    }
+    var diff = baseline(app, opts).map { Differ.render(from: $0, to: snap, geometry: false, nameRemoved: names) } ?? Formatter.render(snap, geometry: false)
     // When the only thing that moved is the menu bar, the action's real effect
     // was to close a menu that was in the way: say so, or the lines below read
     // as the app reacting to the click.

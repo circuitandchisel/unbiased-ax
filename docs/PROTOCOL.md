@@ -149,6 +149,23 @@ the app reacting to the click. Measured 2026-09-08: a press opened a menu and
 the next eight drags each returned the same handful of `menu bar item` lines;
 ten minutes went on blaming the display.
 
+Two rules for `key`, both about keys that destroy. A bare digit — one
+character, no modifiers, no `id` — is text whatever the verb says: when
+keyboard focus is not on an editable control it is refused with
+`action_failed`, because a digit sent at a canvas is a shortcut, not a value
+(measured twice on 2026-09-08: shapes came out at 28% and 40% opacity). Letters
+stay free; one-letter tool shortcuts are the point of the verb. And `delete`
+outside an editable control removes OBJECTS, so a `settle: false` delete is
+watched anyway: the bridge snapshots just before it, settles after it, and
+returns that step's own diff with the removed nodes named ("- removed: 859-880,
+among them: application group "Unbiased, Design frame"; …") plus a `watched`
+field saying why; the baseline is not moved, so the closing read still shows
+the whole sequence. A standalone delete names its removals the same way.
+Measured 2026-09-08: return, delete, return, delete in one unwatched batch
+removed the frame the task lived in; the closing read said only "- removed:
+859-880", the caller wrote "the frame is clean now", and six minutes went on
+looking for it.
+
 Every action also accepts `settle: false`, which returns `{ok, settled:false}`
 the moment the app accepts it: no wait, no snapshot, and the diff baseline left
 where it was. It is for the middle of a known sequence — five inspector fields

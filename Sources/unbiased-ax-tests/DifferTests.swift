@@ -27,6 +27,16 @@ func runDifferTests() {
     let after  = Snapshot(nodes: [win], truncated: false)
     try expectEqual(Differ.render(from: before, to: after, geometry: false), "- removed: 2-4, 9")
   }
+  test("asked to, the removal names the titled nodes first and counts the rest") {
+    let before = Snapshot(nodes: [win, node(2, 1, Attributes(role: "group", title: "Unbiased, Design frame")),
+                                  node(3, 2, Attributes(role: "text", value: "1024")),
+                                  node(4, 2, Attributes(role: "term", title: "Dimensions")),
+                                  node(5, 1, Attributes(role: "tab", title: "D"))], truncated: false)
+    let after  = Snapshot(nodes: [win], truncated: false)
+    try expectEqual(Differ.render(from: before, to: after, geometry: false, nameRemoved: 2),
+                    "- removed: 2-5, among them: group \"Unbiased, Design frame\"; term \"Dimensions\" and 2 more")
+    try expectEqual(Differ.render(from: before, to: after, geometry: false), "- removed: 2-5")
+  }
   test("a window title change is a ~ on the window") {
     let after = Snapshot(nodes: [node(1, 0, Attributes(role: "window", title: "Loser - Audio playing - Brave", actions: ["raise"]))], truncated: false)
     let out = Differ.render(from: Snapshot(nodes: [win], truncated: false), to: after, geometry: false)

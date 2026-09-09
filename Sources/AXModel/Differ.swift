@@ -2,7 +2,12 @@
 /// `~` changed, `+` added, removed summarized by id range. After the first
 /// snapshot this is what callers get, and it is a fraction of the size.
 public enum Differ {
-  public static func render(from before: Snapshot, to after: Snapshot, geometry: Bool) -> String {
+  /// `nameRemoved`: how many removed nodes to name after the id range. Zero by
+  /// default — a closing panel loses a hundred nodes nobody needs listed — and
+  /// set for a step that DELETES things, where the names are the whole point:
+  /// measured 2026-09-08, "- removed: 859-880" was the only trace of a frame
+  /// going, and the caller read it as a clean frame.
+  public static func render(from before: Snapshot, to after: Snapshot, geometry: Bool, nameRemoved: Int = 0) -> String {
     let old = Dictionary(uniqueKeysWithValues: before.nodes.map { ($0.id, $0) })
     let new = Dictionary(uniqueKeysWithValues: after.nodes.map { ($0.id, $0) })
     var lines: [String] = []
@@ -14,7 +19,23 @@ public enum Differ {
       }
     }
     let removed = before.nodes.map(\.id).filter { new[$0] == nil }.sorted()
-    if !removed.isEmpty { lines.append("- removed: " + ranges(removed)) }
+    if !removed.isEmpty {
+      var line = "- removed: " + ranges(removed)
+      if nameRemoved > 0 {
+        // Titled nodes first: a term or a plain text node says less than the
+        // group that held them.
+        let gone = before.nodes.filter { new[$0.id] == nil }
+        let named = gone.filter { !($0.attributes.title ?? "").isEmpty } + gone.filter { ($0.attributes.title ?? "").isEmpty }
+        let shown = named.prefix(nameRemoved).map { n -> String in
+          let t = n.attributes.title.map { " \"\(Formatter.clip($0))\"" } ?? ""
+          return "\(n.attributes.role)\(t)"
+        }
+        if !shown.isEmpty {
+          line += ", among them: " + shown.joined(separator: "; ") + (gone.count > shown.count ? " and \(gone.count - shown.count) more" : "")
+        }
+      }
+      lines.append(line)
+    }
     if after.truncated && !before.truncated { lines.append("… truncated") }
     return lines.isEmpty ? "(no changes)" : lines.joined(separator: "\n")
   }
