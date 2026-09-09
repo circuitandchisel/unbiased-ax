@@ -31,6 +31,37 @@ func runHitTests() {
     try expectEqual(b.pointerCalls.count, 0)
   }
 
+  // Measured 2026-09-09: three of these in ninety seconds while the caller
+  // tried to click a layer row, on a surface that reports nothing anywhere.
+  // Repeating the same sentence taught it nothing; it tried two more clicks.
+  test("a second refusal on the same app says aiming by point does not work here, and what does") {
+    let b = FakeBackend()
+    b.pointerHitResult = .nothing
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let first = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    try expect(!first.contains("2nd time"), "the first refusal stays short: \(first)")
+    let second = call(d, #"{"id":3,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    try expect(second.contains("2nd time") && second.contains("does not report what is under a point"), second)
+    try expect(second.contains("find") && second.contains("keyboard"), "names the routes that do work: \(second)")
+    let third = call(d, #"{"id":4,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    try expect(third.contains("3rd time"), third)
+    try expectEqual(b.pointerCalls.count, 0)
+  }
+
+  test("a pointer that lands resets the count, so a one-off miss never escalates") {
+    let b = FakeBackend()
+    b.pointerHitResult = .nothing
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    b.pointerHitResult = .inside
+    _ = call(d, #"{"id":3,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    b.pointerHitResult = .nothing
+    let again = call(d, #"{"id":4,"method":"pointer","params":{"app":"Brave Browser","id":2}}"#)
+    try expect(!again.contains("2nd time"), "the app proved it can hit-test: \(again)")
+  }
+
   // One-sided, like every other guard here: refuse only on evidence. An
   // ancestor under the point proves nothing either way, so it passes.
   test("a pointer landing on the anchor, a descendant, or a container of it proceeds") {

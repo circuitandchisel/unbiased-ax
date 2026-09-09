@@ -67,6 +67,9 @@ public final class Dispatcher {
   private var latest: [String: Snapshot] = [:]
   /// See remember(_:_:) — id -> what that id described, per app.
   private var idMemory: [String: [Int: Attributes]] = [:]
+  /// Consecutive pointer refusals per app where the app reported nothing under
+  /// the point. Cleared the moment one lands — see the `.nothing` case.
+  private var blindPoints: [String: Int] = [:]
   /// Apps whose raise we have already declined during the CURRENT parked
   /// episode. Cleared the moment the window is seen un-parked, so each new
   /// episode gets one refusal — see the "raise" case.
@@ -193,7 +196,7 @@ public final class Dispatcher {
         let focus = try backend.focusedControl(app: app)
         guard let f = focus, Self.editableRoles.contains(f.role) else {
           let what = focus.map { "\($0.role)\($0.title.map { " \"\($0)\"" } ?? "")" } ?? "no element"
-          throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: a digit sent there is a shortcut, not a value. Nothing was sent. To enter a number, use type with the field's id, or click the field first and check that it took focus.")
+          throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: a digit sent there is a shortcut, not a value. Nothing was sent. To enter a number, use type with the field's id, or click the field first and check that it took focus. If you meant the digit as a keyboard shortcut, pass id to aim it at the element that should receive it.")
         }
       }
       // A delete outside a text field removes OBJECTS, and a caller mid-sequence
@@ -351,8 +354,19 @@ public final class Dispatcher {
       case .unrelated(let role, let title):
         throw BridgeError.actionFailed("The first point lands on \(role)\(title.map { " \"\($0)\"" } ?? ""), not inside element \(anchor): the element's reported position does not match what is on screen. Nothing was clicked. Read the app again and aim at what the tree now shows there.")
       case .nothing:
-        throw BridgeError.actionFailed("The app reports nothing at the first point, so a click would land on empty space or another window. Nothing was clicked. Read the app again.")
+        // Measured 2026-09-09: three of these in ninety seconds while the
+        // caller tried to click a row in a panel that reports nothing
+        // anywhere. The same sentence three times taught it nothing, and it
+        // spent two more turns clicking. So the second one says the surface
+        // itself is the problem and names the routes that do not need a point.
+        let missed = (blindPoints[app] ?? 0) + 1
+        blindPoints[app] = missed
+        if missed == 1 {
+          throw BridgeError.actionFailed("The app reports nothing at the first point, so a click would land on empty space or another window. Nothing was clicked. Read the app again.")
+        }
+        throw BridgeError.actionFailed("The app reports nothing at the first point. Nothing was clicked. This is the \(Self.ordinal(missed)) time in a row this app does not report what is under a point, so aiming by fraction will not reach anything here however the numbers are chosen. Use a route that needs no point: find the thing by name and act on the id that comes back, or drive it from the keyboard.")
       }
+      blindPoints[app] = 0 // it can hit-test after all; a one-off miss must not escalate
       let landed = try backend.pointer(app: app, id: anchor, path: aim,
                                        hold: hold, modifiers: try modifierList(p), clicks: clicks)
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
@@ -677,6 +691,19 @@ public final class Dispatcher {
       touched += 1
     }
     return touched > 0
+  }
+
+  static func ordinal(_ n: Int) -> String {
+    switch n % 100 {
+    case 11, 12, 13: return "\(n)th"
+    default: break
+    }
+    switch n % 10 {
+    case 1: return "\(n)st"
+    case 2: return "\(n)nd"
+    case 3: return "\(n)rd"
+    default: return "\(n)th"
+    }
   }
 
   private func baseline(_ app: String, _ o: SnapshotOptions) -> Snapshot? { baselines[app]?[Self.filterKey(o)] }

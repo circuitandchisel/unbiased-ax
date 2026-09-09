@@ -23,6 +23,9 @@ func runDestructiveKeyTests() {
     let out = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"5","settle":false}}"#)
     try expect(out.contains("action_failed") && out.contains(#"web area \"Untitled\""#) && out.contains("shortcut"), out)
     try expect(out.contains("Nothing was sent") && out.contains("use type"), out)
+    // Measured 2026-09-09: the caller wanted the digit AS a shortcut (a zoom
+    // key) and read this refusal three times without learning the way through.
+    try expect(out.contains("meant the digit as a keyboard shortcut") && out.contains("pass id"), "names the escape hatch: \(out)")
     try expectEqual(b.keys.count, 0)
   }
 

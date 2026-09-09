@@ -137,6 +137,19 @@ on the same run: a click aimed inside one element selected a different one, and
 a coordinate typed after a click that had not taken focus changed a setting
 instead — a dozen and six turns respectively to find out and repair.
 
+Both refusals name the way through, because a refusal a caller cannot act on
+is just a wall. The digit one says how to enter a number AND that an `id`
+aims a deliberate shortcut at an element, which is the case it was measured
+getting wrong: on 2026-09-09 a caller meant a digit as a zoom key, read the
+refusal three times, and never found the escape hatch. And when an app
+reports nothing under a point twice in a row, the second refusal stops
+repeating itself and says the surface does not report what is on it, so no
+choice of fraction will reach anything there — find the thing by name and act
+on the id, or use the keyboard. The count is per app and is cleared by any
+pointer that lands, so a one-off miss never escalates. Measured the same day:
+three of these in ninety seconds against a panel that hit-tests nowhere, and
+the caller answered the repeated sentence with two more clicks.
+
 An open menu owns the pointer. While the tree shows one — a `menu bar item`
 marked `[selected]` with its `menu item`s beneath it, or a context menu's items
 — `pointer` refuses with `action_failed` naming the menu, because the first
