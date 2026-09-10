@@ -35,5 +35,6 @@ runMenuVerbTests()
 runWindowChoiceTests()
 runTypeTests()
 runServerTests()
+runPathGeometryTests()
 
 finish()

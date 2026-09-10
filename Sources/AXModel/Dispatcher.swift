@@ -78,6 +78,12 @@ public final class Dispatcher {
   /// episode. Cleared the moment the window is seen un-parked, so each new
   /// episode gets one refusal — see the "raise" case.
   private var refusedRaise: Set<String> = []
+  /// Apps where an action was accepted and changed nothing WHILE the window was
+  /// parked — the situation the raise refusal exists for. Cleared when the
+  /// window un-parks, never by a later action that worked.
+  private var deadWhileParked: Set<String> = []
+  /// A click path this long is a drawing, not a handful of controls.
+  public static let drawingPathPoints = 20
   /// Per app, the exact action that was last accepted and changed nothing.
   /// Sending it again is refused once — see repeatCheck.
   private var lastNoChange: [String: String] = [:]
@@ -316,12 +322,22 @@ public final class Dispatcher {
       // earlier version ended with "ask again and it will go through", and the
       // model asked again five seconds later — measured. A refusal that
       // explains how to get around it is a speed bump, not a refusal.
+      //
+      // Refused only once an action on the parked window has actually done
+      // nothing. Measured 2026-09-10: a caller that needed pointer input — the
+      // one thing a parked window genuinely cannot take — asked to raise
+      // FIRST, before pressing anything, and was refused on the window's
+      // state alone; it then zoomed, screenshotted, clicked a dead canvas and
+      // asked again 43 seconds later. A raise before any dead press is the
+      // intent, not the reflex. The arming survives a later action that
+      // worked (see above); only un-parking clears it.
       if backend.unresponsiveHint(app: app) != nil {
-        if refusedRaise.insert(app).inserted {
+        if deadWhileParked.contains(app), refusedRaise.insert(app).inserted {
           throw BridgeError.actionFailed("Raising \(app) will not fix a press that did nothing: the window re-parks as soon as focus moves on, so this costs the user their screen and changes nothing. Do the keyboard route instead — key \"down\", then key \"return\", in one call — or use a menu bar item.")
         }
       } else {
         refusedRaise.remove(app)
+        deadWhileParked.remove(app)
       }
       try backend.raise(app: app, windowId: p["window"] as? Int)
       return try afterAction(app, p)
@@ -377,6 +393,13 @@ public final class Dispatcher {
       // An empty path means "the middle of it", which is what a caller wanting
       // to click a field means, and saves writing {"x":0.5,"y":0.5} every time.
       let aim = path.isEmpty ? [(x: 0.5, y: 0.5)] : path
+      // A long click path is an outline the app will fill, and one that crosses
+      // itself is never the shape that was meant. See PathGeometry for the run
+      // that drew one. Checked here, where it costs nothing, not after the fill.
+      if !hold, clicks == 1, aim.count >= Self.drawingPathPoints, let x = PathGeometry.selfCrossing(aim) {
+        func f(_ i: Int) -> String { let q = aim[i % aim.count]; return "(\(Self.frac(q.x)), \(Self.frac(q.y)))" }
+        throw BridgeError.badParams("The path crosses itself: the segment from point \(x.a + 1) to \(x.a + 2), \(f(x.a))→\(f(x.a + 1)), crosses the segment from point \(x.b + 1) to \(x.b + 2), \(f(x.b))→\(f(x.b + 1)). A traced outline must go round in one direction without crossing — where it folds, the app fills it inside out. Nothing was clicked. Move or reorder the points around those two segments and send the path again.")
+      }
       // An open menu owns the pointer: the first click or drag dismisses it and
       // reaches nothing else. Measured 2026-09-08: a press opened a menu and the
       // next eight drags each reported the same handful of `menu bar item`
@@ -626,7 +649,7 @@ public final class Dispatcher {
     // Nothing moved: if the backend knows why this app ignores presses, say so
     // now, before the model retries the same control four different ways.
     if diff == "(no changes)" {
-      if let why = backend.unresponsiveHint(app: app) { out["hint"] = why }
+      if let why = backend.unresponsiveHint(app: app) { out["hint"] = why; deadWhileParked.insert(app) }
       if let actionKey { lastNoChange[app] = actionKey }
     } else {
       lastNoChange.removeValue(forKey: app)
@@ -676,6 +699,8 @@ public final class Dispatcher {
     }
     return list
   }
+
+  static func frac(_ v: Double) -> String { String(format: "%.3f", v) }
 
   /// Fractions, validated. Anything outside 0-1 is refused with the reason,
   /// because the alternative is a click landing somewhere nobody chose.

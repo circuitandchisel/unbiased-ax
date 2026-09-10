@@ -94,7 +94,7 @@ depth cap, which is why a larger `depth` never recovered any of it.
 | `scroll` | `app`, `id`, `dx?`, `dy?` (at least one non-zero; negative `dy` scrolls down) | `{ok, diff}` — real wheel events at the element's midpoint — unverified on a window on another Space |
 | `menus` | `app`, `query?` | Without `query`: `{menus, count, hint}` — the top-level menu titles and how many commands the bar holds. With `query`: `{items, count}` — every command whose `Menu > Title` path contains it, as `View > Show/Hide UI  ⌘\` (disabled ones say so), at most 60. Read from the CLOSED menu bar: no menu opens, nothing is pressed |
 | `menu` | `app`, `item` (a title, or `Menu > Title` when the title is in several menus), `keepFront?` | `{ok, diff, ran, shortcut?}` — runs one menu command. The app is activated first, because a closed item pressed in a background app returns success and does nothing. A title found in two menus is refused naming both; a disabled one is refused saying so; an unknown one gets the nearest names |
-| `pointer` | `app`, `id` (the element the fractions are measured in), `path?` (list of `{x, y}` FRACTIONS 0-1, max 120 — without `hold` that is one CLICK per point, which is how an outline is traced with a pen tool; omitted means the element's centre), `clicks?` (1-3; 2 is a double click, a different event that some controls honour where one does not), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot |
+| `pointer` | `app`, `id` (the element the fractions are measured in), `path?` (list of `{x, y}` FRACTIONS 0-1, max 120 — without `hold` that is one CLICK per point, which is how an outline is traced with a pen tool; omitted means the element's centre), `clicks?` (1-3; 2 is a double click, a different event that some controls honour where one does not), `hold?`, `modifiers?` | `{ok, diff, at}` — a click at each point, or one press-drag-release with `hold`; `at` reports the screen points used. Posted to the HID tap at real coordinates, so it REFUSES a window that is parked or on another Space: a click there would land on whatever is at that spot. A click path of 20+ points is an outline, and one that crosses itself is refused before the first click, naming the two segments |
 | `screenshot` | `app`, `window?` (id from `windows`; default the focused window) | `{image, mime, width, height, window, onSpace, note?}` — JPEG (base64, `mime` says) of that one window, taken through ScreenCaptureKit wherever the window is, without raising anything; 1x; needs Screen Recording. Off-Space windows carry `note`: what the app only draws while visible (map tiles, video) may be blank |
 | `raise` | `app`, `window?` | `{ok, diff}` — brings the app forward from any Space. Takes the user's screen: only when the user should see the app |
 | `launch` | `app`, `timeout?`(15), plus the `tree` options | `{ok, alreadyRunning, tree, count, offscreen, hint?}` — opens the app (in the background when `crossSpace`) and waits until it is readable; on `timeout`, `ok` is still true if the app is running; the tree and `hint` say whether it is readable|
@@ -181,6 +181,16 @@ from point 63". The check is one `AXUIElementCopyElementAtPosition` per point.
 Within one click the move, press and release are 12ms apart; the 70ms
 cadence the app needs is between points. Measured 2026-09-10: a 112-point trace
 paced at 70ms after every event took 33s, 23s of it inside the clicks.
+
+An outline that crosses itself is refused before anything is posted. A click
+path of 20 or more points (without `hold`, single clicks) is the shape the app
+will fill, and where it folds the app fills it inside out. Measured 2026-09-10:
+an 81-point trace went out to a ray's tip, back to a point inside the body and
+out again; the fill showed a twisted spike and two and a half minutes went on
+trying to redraw it. The check is segment intersection over the path, the
+closing segment included when the last point is on the first; the refusal
+names both segments with their fractions. Short paths and drags are not
+outlines and are not checked.
 
 A click path is paced so the app never sees a double-click the caller did not
 ask for. Two clicks within the double-click radius and interval are one

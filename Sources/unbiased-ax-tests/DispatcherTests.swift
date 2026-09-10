@@ -675,10 +675,33 @@ func runParkedRaiseTests() {
   // raises to fix it. The hint, the tool description and the skill all said
   // not to. So it is refused rather than described.
 
-  test("while the window is parked, the first raise is refused and names the route that works") {
+  // A raise BEFORE anything has been pressed is the intent, not the reflex.
+  // Measured 2026-09-10: a caller that needed pointer input asked to raise
+  // first, was refused on the window's state alone, and lost 45 seconds
+  // discovering that nothing else works either.
+  test("a raise before any dead action goes through, parked or not") {
     let b = FakeBackend()
     b.parkedWindow = true
     let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""ok":true"#), out)
+    try expectEqual(b.raised.count, 1)
+  }
+
+  /// A press on the parked window that changed nothing — what arms the refusal.
+  /// `key` varies it, because the repeat guard refuses the same dead action twice.
+  func deadPress(_ d: Dispatcher, key: String? = nil) {
+    _ = call(d, #"{"id":90,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = key.map { call(d, "{\"id\":91,\"method\":\"key\",\"params\":{\"app\":\"Brave Browser\",\"key\":\"\($0)\"}}") }
+      ?? call(d, #"{"id":91,"method":"act","params":{"app":"Brave Browser","id":2,"action":"press"}}"#)
+    precondition(out.contains("(no changes)"), "the fake's action must do nothing here: \(out)")
+  }
+
+  test("after a press that did nothing on the parked window, the first raise is refused and names the route that works") {
+    let b = FakeBackend()
+    b.parkedWindow = true
+    let d = Dispatcher(backend: b)
+    deadPress(d)
     let out = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains("will not fix a press that did nothing"), out)
     try expect(out.contains("down") && out.contains("return"), "the refusal must name what to do instead: \(out)")
@@ -689,6 +712,7 @@ func runParkedRaiseTests() {
     let b = FakeBackend()
     b.parkedWindow = true
     let d = Dispatcher(backend: b)
+    deadPress(d)
     _ = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#) // refused
     let out = call(d, #"{"id":2,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains(#""ok":true"#), out)
@@ -711,9 +735,9 @@ func runParkedRaiseTests() {
   test("succeeding at the keyboard route does not disarm the refusal") {
     let b = FakeBackend()
     b.parkedWindow = true
-    b.snapshotsUntilChange = 1 // the next action changes the tree
     let d = Dispatcher(backend: b)
-    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    deadPress(d) // armed
+    b.snapshotsUntilChange = 1 // the next action changes the tree
     let worked = call(d, #"{"id":2,"method":"key","params":{"app":"Brave Browser","key":"return"}}"#)
     try expect(!worked.contains("(no changes)"), "the keyboard worked: \(worked)")
     let out = call(d, #"{"id":3,"method":"raise","params":{"app":"Brave Browser"}}"#)
@@ -724,11 +748,13 @@ func runParkedRaiseTests() {
     let b = FakeBackend()
     b.parkedWindow = true
     let d = Dispatcher(backend: b)
+    deadPress(d)
     _ = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#) // refused, armed
     b.parkedWindow = false
     let allowed = call(d, #"{"id":2,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(allowed.contains(#""ok":true"#), allowed)
     b.parkedWindow = true
+    deadPress(d, key: "down")
     let out = call(d, #"{"id":3,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(out.contains("will not fix"), "a new parked episode gets a fresh refusal: \(out)")
   }
@@ -758,6 +784,9 @@ func runRepeatTests() {
     let b = FakeBackend()
     b.parkedWindow = true
     let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":0,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let dead = call(d, #"{"id":1,"method":"key","params":{"app":"Brave Browser","key":"down"}}"#) // arms the refusal
+    try expect(dead.contains("(no changes)"), dead)
     let raise = call(d, #"{"id":1,"method":"raise","params":{"app":"Brave Browser"}}"#)
     try expect(raise.contains("will not fix"), raise)
     try expect(!raise.lowercased().contains("ask for raise again"), "an earlier version advertised the second ask and the model took it: \(raise)")
