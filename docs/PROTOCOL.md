@@ -185,8 +185,8 @@ paced at 70ms after every event took 33s, 23s of it inside the clicks.
 An outline that crosses itself is refused before anything is posted. A click
 path of 20 or more points (without `hold`, single clicks) is the shape the app
 will fill, and where it folds the app fills it inside out. Measured 2026-09-10:
-an 81-point trace went out to a ray's tip, back to a point inside the body and
-out again; the fill showed a twisted spike and two and a half minutes went on
+an 81-point trace went out to one point of the shape, back to a point inside
+the body and out again; the fill showed a twisted fold and two and a half minutes went on
 trying to redraw it. The check is segment intersection over the path, the
 closing segment included when the last point is on the first; the refusal
 names both segments with their fractions. Short paths and drags are not

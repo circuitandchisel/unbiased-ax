@@ -5,10 +5,10 @@ import Foundation
 /// A path of clicks that traces an outline is the shape the app will fill,
 /// and an outline that crosses itself is never the shape anyone meant: the app
 /// fills it inside out where it folds. Measured 2026-09-10 — an 81-point trace
-/// went out to a ray's tip, came back to a point that lay INSIDE the body, and
-/// went out again; two segments crossed two others, the fill showed a twisted
-/// spike, and the run spent two and a half minutes on tools it did not have
-/// trying to redraw it. The crossing was in the coordinates before the first
+/// went out to one point of the shape, came back to a point that lay INSIDE
+/// the body, and went out again; two segments crossed two others, the fill
+/// showed a twisted fold, and the run spent two and a half minutes on tools it
+/// did not have trying to redraw it. The crossing was in the coordinates before the first
 /// click, where it costs nothing to find.
 public enum PathGeometry {
   /// A pair of non-adjacent segments that cross, as 0-based indices of the
