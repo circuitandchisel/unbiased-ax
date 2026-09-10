@@ -334,12 +334,12 @@ public final class LiveBackend: Backend {
     }
     let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
     let f = Self.flags(for: modifiers)
-    func post(_ type: CGEventType, _ at: CGPoint, clickState: Int = 1) {
+    func post(_ type: CGEventType, _ at: CGPoint, clickState: Int = 1, then gap: UInt32 = Self.pointerStepUs) {
       guard let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: .left) else { return }
       ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
       if !f.isEmpty { ev.flags = f }
       ev.post(tap: .cghidEventTap)
-      usleep(Self.pointerStepUs)
+      usleep(gap)
     }
     if hold, points.count > 1 {
       post(.mouseMoved, points[0])
@@ -369,8 +369,12 @@ public final class LiveBackend: Backend {
           return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title))
         }
         if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
-        post(.mouseMoved, step.point)
-        post(.leftMouseDown, step.point)
+        // The cadence the app needs is between POINTS; the move, press and
+        // release of one click are one gesture and want only a moment apart.
+        // Measured 2026-09-10: a 112-point trace paced at 70ms after every
+        // event took 33s, 23s of which were the two intra-click gaps.
+        post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
+        post(.leftMouseDown, step.point, then: Self.pointerWithinClickUs)
         post(.leftMouseUp, step.point)
         landed.append(step.point)
       }
@@ -583,9 +587,15 @@ public final class LiveBackend: Backend {
   /// turn it saves.
   static let typeLeadUs: UInt32 = 120_000
 
-  /// Between events. Apps that build a path from clicks drop points sent
-  /// faster than they redraw; measured at 70ms in the comparison run.
+  /// Between events, and so between the points of a click path. Apps that
+  /// build a path from clicks drop points sent faster than they redraw;
+  /// measured at 70ms in the comparison run.
   static let pointerStepUs: UInt32 = 70_000
+  /// Between the move, press and release that make one click of that path.
+  /// A human click holds the button for around 80ms and no app requires it;
+  /// 12ms keeps the three events in order on a busy renderer while the
+  /// between-point cadence above stays the pace the app sees.
+  static let pointerWithinClickUs: UInt32 = 12_000
 
   static func frame(of el: AXElement) -> CGRect? {
     var posRef: CFTypeRef?

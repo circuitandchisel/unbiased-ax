@@ -178,6 +178,10 @@ clicked stops the clicks in front of it, and the reply says "Clicked 62 of 89
 points, then stopped … what was drawn is still open at point 62 … continue
 from point 63". The check is one `AXUIElementCopyElementAtPosition` per point.
 
+Within one click the move, press and release are 12ms apart; the 70ms
+cadence the app needs is between points. Measured 2026-09-10: a 112-point trace
+paced at 70ms after every event took 33s, 23s of it inside the clicks.
+
 A click path is paced so the app never sees a double-click the caller did not
 ask for. Two clicks within the double-click radius and interval are one
 double-click to whoever counts them, and a pen tool ends its path on one.
