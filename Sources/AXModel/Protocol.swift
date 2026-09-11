@@ -117,9 +117,13 @@ public struct PointerOutcome {
   public var blocked: PointerBlock?
   /// The pointer was put back where the user left it once the path was done.
   public var pointerReturned: Bool
-  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil, pointerReturned: Bool = false) {
+  /// The user's pointer was used at all. False is the good case: the clicks
+  /// were delivered to the point without the cursor ever going there.
+  public var movedPointer: Bool
+  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil,
+              pointerReturned: Bool = false, movedPointer: Bool = true) {
     self.landed = landed; self.skipped = skipped; self.blocked = blocked
-    self.pointerReturned = pointerReturned
+    self.pointerReturned = pointerReturned; self.movedPointer = movedPointer
   }
 }
 

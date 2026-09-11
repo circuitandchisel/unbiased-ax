@@ -56,6 +56,10 @@ app.whenReady().then(() => {
   });
   win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
   win.once("ready-to-show", () => {
+    // Follow whoever is looking, like the native probe: on a desktop of
+    // full-screen Spaces a window born on another Space is unreachable, and
+    // every coordinate aimed at it lands on whatever is displayed instead.
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.showInactive();
     say("state", { kind: "webLaunched", pid: process.pid, bounds: win.getBounds() });
   });

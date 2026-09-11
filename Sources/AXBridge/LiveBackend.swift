@@ -342,21 +342,34 @@ public final class LiveBackend: Backend {
     guard frame.width > 1, frame.height > 1 else {
       throw BridgeError.actionFailed("element \(id) is \(Int(frame.width))x\(Int(frame.height)); too small to aim inside")
     }
+    let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
+    let f = Self.flags(for: modifiers)
     // Where the user left the pointer. Posting to the HID tap moves the real
     // pointer — there is one — so it is borrowed for the length of the path
     // and handed back at the end, wherever the path finished and whatever went
     // wrong on the way.
     let cursorHome = CGEvent(source: nil)?.location
+    // Modifiers and multi-clicks still need the event route, which carries
+    // flags and a click state the quiet one cannot.
+    let quiet = Self.postMouse != nil && f.isEmpty && clicks == 1
+    var movedPointer = !quiet
     defer {
-      if let home = cursorHome {
+      // Only worth putting back if it was taken.
+      if movedPointer, let home = cursorHome {
         CGWarpMouseCursorPosition(home)
         // Apple's own advice after a warp: without this the pointer ignores
         // the user's next movements for a moment.
         CGAssociateMouseAndMouseCursorPosition(1)
       }
     }
-    let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
-    let f = Self.flags(for: modifiers)
+    /// One click at a point, leaving the cursor alone.
+    func quietClick(_ at: CGPoint) {
+      guard let post = Self.postMouse else { return }
+      _ = post(at, 0, 1, 1)
+      usleep(Self.pointerWithinClickUs)
+      _ = post(at, 0, 1, 0)
+      usleep(Self.pointerStepUs)
+    }
     func post(_ type: CGEventType, _ at: CGPoint, clickState: Int = 1, then gap: UInt32 = Self.pointerStepUs) {
       guard let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: .left) else { return }
       ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
@@ -365,6 +378,15 @@ public final class LiveBackend: Backend {
       usleep(gap)
     }
     if hold, points.count > 1 {
+      if quiet, let post = Self.postMouse {
+        // A drag is the button held down across the points: the same call with
+        // the button still pressed is what makes it a drag rather than clicks.
+        _ = post(points[0], 0, 1, 1)
+        usleep(Self.pointerWithinClickUs)
+        for pt in points.dropFirst() { _ = post(pt, 0, 1, 1); usleep(Self.pointerStepUs) }
+        _ = post(points[points.count - 1], 0, 1, 0)
+        return PointerOutcome(landed: points, pointerReturned: false, movedPointer: false)
+      }
       post(.mouseMoved, points[0])
       post(.leftMouseDown, points[0])
       for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
@@ -390,19 +412,23 @@ public final class LiveBackend: Backend {
         // the path in front of it, and the caller is told where.
         if i > 0, case .unrelated(let role, let title) = relation(at: step.point, anchor: el, anchorFrame: frame, root: root) {
           return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title),
-                                pointerReturned: cursorHome != nil)
+                                pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
         }
         if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
         // The cadence the app needs is between POINTS; the move, press and
         // release of one click are one gesture and want only a moment apart.
         // Measured 2026-09-10: a 112-point trace paced at 70ms after every
         // event took 33s, 23s of which were the two intra-click gaps.
-        post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
-        post(.leftMouseDown, step.point, then: Self.pointerWithinClickUs)
-        post(.leftMouseUp, step.point)
+        if quiet {
+          quietClick(step.point)
+        } else {
+          post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
+          post(.leftMouseDown, step.point, then: Self.pointerWithinClickUs)
+          post(.leftMouseUp, step.point)
+        }
         landed.append(step.point)
       }
-      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: cursorHome != nil)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
     } else {
       for pt in points {
         post(.mouseMoved, pt)
@@ -416,7 +442,7 @@ public final class LiveBackend: Backend {
         }
       }
     }
-    return PointerOutcome(landed: points, pointerReturned: cursorHome != nil)
+    return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
   }
 
   public func prepareForPointer(app: String) throws -> Bool {
@@ -644,6 +670,24 @@ public final class LiveBackend: Backend {
   /// build a path from clicks drop points sent faster than they redraw;
   /// measured at 70ms in the comparison run.
   static let pointerStepUs: UInt32 = 70_000
+  /// The one route that delivers a click at a point WITHOUT moving the user's
+  /// pointer: its second argument is literally "update the mouse cursor
+  /// position", and passing false leaves the cursor where the user left it
+  /// while the click still lands and still reaches a system event tap.
+  ///
+  /// Measured 2026-09-11 against the comparison agent, whose clicks arrived at
+  /// a test app while the real pointer sat 2,400 points away on another
+  /// display — and against every alternative: posting to the HID or session
+  /// tap delivers but drags the pointer; posting to the annotated tap leaves
+  /// the pointer alone but is never delivered; warping there and back is
+  /// visible to a 10ms sampler and reads as a pointer that WAS there. This is
+  /// the only combination that matches. Deprecated since 10.6, still the only
+  /// way, so it is resolved rather than linked and the old route stays as a
+  /// fallback.
+  private typealias PostMouseFn = @convention(c) (CGPoint, Int32, UInt32, Int32) -> Int32
+  private static let postMouse: PostMouseFn? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGPostMouseEvent")
+    .map { unsafeBitCast($0, to: PostMouseFn.self) }
+
   /// After a Space switch, before trusting a frame. The switch animates and
   /// accessibility reports the destination frame before the compositor gets
   /// there; measured 2026-09-11, aiming inside that window cost one wrong

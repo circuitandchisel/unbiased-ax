@@ -190,15 +190,23 @@ refusing and handing the problem back cost a 45-second detour — zoom,
 screenshot, a dead click, then the same request again — so the app is brought
 forward instead.
 
-The pointer itself is borrowed, not kept. Its position is saved before the
-first point and warped back after the last one, on every path and on every
-failure, so a drawing does not leave the pointer parked on another screen.
-There is exactly one pointer and no way to avoid moving it: measured
-2026-09-11, mouse events delivered to a process rather than to the screen
-(`CGEventPostToPid`, with the window number set, with the window made key,
-with the app active, and built through AppKit's window-addressed constructor)
-are ignored by Chromium and by AppKit apps alike on this macOS. Keyboard
-events delivered that way DO arrive, which is why only the pointer needs this.
+The user's pointer is not moved at all. A click goes out through
+`CGPostMouseEvent`, whose second argument is literally "update the mouse
+cursor position"; passing false lands the click at the point while the cursor
+stays where the user left it. Modifiers and multi-clicks still take the event
+route, which carries flags and a click state that call cannot, and there the
+pointer is borrowed and warped back afterwards. The reply says which happened.
+
+That call was found by measurement, not by reading documentation. Measured
+2026-09-11 with a four-way instrumented probe (scripts/probe/cua-probe):
+posting to the HID or session tap delivers but drags the pointer; posting to
+the annotated tap leaves the pointer alone but is never delivered; events sent
+to a process rather than to the screen are ignored by Chromium and by AppKit
+apps alike, whatever the event source and whether or not the app is active;
+and warping there and back is caught by a 10ms sampler and still reads to the
+app as a pointer that WAS there. Only this one combination delivers the click
+and leaves the cursor alone, and it is what the comparison agent uses: its
+clicks arrived at the probe while the real pointer sat 2,400 points away.
 
 An outline that crosses itself is refused before anything is posted. A click
 path of 20 or more points (without `hold`, single clicks) is the shape the app

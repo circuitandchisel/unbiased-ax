@@ -452,9 +452,12 @@ public final class Dispatcher {
         out["raised"] = true
         notes.append("Brought \(app) forward first: pointer input is posted at real screen coordinates, so its window had to be on this Space. Reading and pressing still work in the background; only the pointer needs this.")
       }
-      if outcome.pointerReturned {
+      if !outcome.movedPointer {
+        out["pointerUntouched"] = true
+        notes.append("The user's pointer was not moved: the clicks were delivered to the window where they landed, so whatever they were doing with the mouse was not interrupted.")
+      } else if outcome.pointerReturned {
         out["pointerReturned"] = true
-        notes.append("The pointer was put back where the user had left it.")
+        notes.append("The pointer was borrowed for this and put back where the user had left it.")
       }
       // A control appeared under the path AFTER the up-front check passed —
       // a floating toolbar the app raises once drawing begins. The clicks
