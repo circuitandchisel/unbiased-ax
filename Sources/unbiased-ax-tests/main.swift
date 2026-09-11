@@ -36,5 +36,6 @@ runWindowChoiceTests()
 runTypeTests()
 runServerTests()
 runPathGeometryTests()
+runPointerRaiseTests()
 
 finish()

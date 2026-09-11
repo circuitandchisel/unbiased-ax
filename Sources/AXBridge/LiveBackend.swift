@@ -319,18 +319,41 @@ public final class LiveBackend: Backend {
   /// click would land on whatever is at that spot instead.
   public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     let a = try resolve(app)
+    // Pointer input is the one thing here that cannot work in the background:
+    // it is posted at real screen coordinates, so the window has to be where
+    // those coordinates are. This used to refuse and hand the problem back,
+    // which cost a detour every time. Measured 2026-09-11 against the
+    // comparison agent: it brings the app forward for exactly this reason and
+    // never moves the pointer, because it delivers events to the window
+    // itself — a route that is not available to us (per-process mouse
+    // delivery is ignored by both Chromium and AppKit apps on this macOS,
+    // measured). So bring the app forward, then put the pointer back.
+    // The frame is read AFTER the app is forward (prepareForPointer ran first):
+    // coming from another Space or out of Stage Manager can move and resize it.
     let (_, el) = try element(app, id)
-    guard let frame = Self.frame(of: el) else {
+    // Read it until it holds still. A window that has just come from another
+    // Space keeps moving for a moment, and accessibility reports each
+    // intermediate position as fact: measured 2026-09-11, aiming at the first
+    // answer put the click 54x108 points from the control, every time, in a
+    // way no hit test could catch because accessibility agreed with itself.
+    guard let frame = Self.settledFrame(of: el) else {
       throw BridgeError.actionFailed("element \(id) does not report a position and size, so there is nothing to aim inside")
     }
     guard frame.width > 1, frame.height > 1 else {
       throw BridgeError.actionFailed("element \(id) is \(Int(frame.width))x\(Int(frame.height)); too small to aim inside")
     }
-    if let parked = parkedWindow(app: app) {
-      throw BridgeError.actionFailed("\(a.localizedName ?? app)'s window is parked by Stage Manager at \(parked.actual.w)x\(parked.actual.h), so it is not where these coordinates are on screen and a click would land on whatever is. Pointer input is the one thing that needs the window really visible: raise the app first, and say so to the user, or do this with the keyboard and menus instead.")
-    }
-    if let wins = try? windows(app: app), wins.allSatisfy({ !$0.onSpace }) {
-      throw BridgeError.actionFailed("\(a.localizedName ?? app) has no window on this Space, so a click at these coordinates would land on another app. Raise it first, or use the keyboard and menus.")
+    // Where the user left the pointer. Posting to the HID tap moves the real
+    // pointer — there is one — so it is borrowed for the length of the path
+    // and handed back at the end, wherever the path finished and whatever went
+    // wrong on the way.
+    let cursorHome = CGEvent(source: nil)?.location
+    defer {
+      if let home = cursorHome {
+        CGWarpMouseCursorPosition(home)
+        // Apple's own advice after a warp: without this the pointer ignores
+        // the user's next movements for a moment.
+        CGAssociateMouseAndMouseCursorPosition(1)
+      }
     }
     let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
     let f = Self.flags(for: modifiers)
@@ -346,7 +369,7 @@ public final class LiveBackend: Backend {
       post(.leftMouseDown, points[0])
       for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
       post(.leftMouseUp, points[points.count - 1])
-      return PointerOutcome(landed: points)
+      return PointerOutcome(landed: points, pointerReturned: cursorHome != nil)
     } else if clicks == 1 {
       // Single clicks along a path — the shape of pen-tool tracing. Two clicks
       // within the double-click radius and interval ARE a double-click, whoever
@@ -366,7 +389,8 @@ public final class LiveBackend: Backend {
         // control there; from the second on, a control under the point stops
         // the path in front of it, and the caller is told where.
         if i > 0, case .unrelated(let role, let title) = relation(at: step.point, anchor: el, anchorFrame: frame, root: root) {
-          return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title))
+          return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title),
+                                pointerReturned: cursorHome != nil)
         }
         if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
         // The cadence the app needs is between POINTS; the move, press and
@@ -378,7 +402,7 @@ public final class LiveBackend: Backend {
         post(.leftMouseUp, step.point)
         landed.append(step.point)
       }
-      return PointerOutcome(landed: landed, skipped: plan.dropped)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: cursorHome != nil)
     } else {
       for pt in points {
         post(.mouseMoved, pt)
@@ -392,7 +416,36 @@ public final class LiveBackend: Backend {
         }
       }
     }
-    return PointerOutcome(landed: points)
+    return PointerOutcome(landed: points, pointerReturned: cursorHome != nil)
+  }
+
+  public func prepareForPointer(app: String) throws -> Bool {
+    let a = try resolve(app)
+    func visible() -> Bool {
+      guard parkedWindow(app: app) == nil, let wins = try? windows(app: app) else { return false }
+      return wins.contains { $0.onSpace }
+    }
+    if visible() { return false }
+    try? raise(app: app, windowId: nil)
+    let deadline = Date().addingTimeInterval(2.0)
+    while !visible(), Date() < deadline { usleep(80_000) }
+    // Becoming listable is not the same as having arrived. A Space switch
+    // animates, and until it finishes the frames accessibility reports are not
+    // yet where the window is drawn: measured 2026-09-11, a click aimed
+    // straight after the switch landed on the neighbouring control. Wait for
+    // the app to actually be in front, then give the animation a beat.
+    let settleBy = Date().addingTimeInterval(2.0)
+    while NSWorkspace.shared.frontmostApplication?.processIdentifier != a.processIdentifier, Date() < settleBy {
+      usleep(80_000)
+    }
+    usleep(Self.spaceSettleUs)
+    if let parked = parkedWindow(app: app) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app)'s window is parked by Stage Manager at \(parked.actual.w)x\(parked.actual.h) even after being brought forward, so it is not where these coordinates are on screen and a click would land on whatever is. Do this with the keyboard and menus instead, or ask the user to un-park the window.")
+    }
+    if let wins = try? windows(app: app), wins.allSatisfy({ !$0.onSpace }) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) still has no window on this Space after being brought forward, so a click at these coordinates would land on another app. Use the keyboard and menus instead.")
+    }
+    return true
   }
 
   public func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
@@ -591,11 +644,34 @@ public final class LiveBackend: Backend {
   /// build a path from clicks drop points sent faster than they redraw;
   /// measured at 70ms in the comparison run.
   static let pointerStepUs: UInt32 = 70_000
+  /// After a Space switch, before trusting a frame. The switch animates and
+  /// accessibility reports the destination frame before the compositor gets
+  /// there; measured 2026-09-11, aiming inside that window cost one wrong
+  /// control. Paid only when the app actually had to be brought forward.
+  static let spaceSettleUs: UInt32 = 500_000
+
   /// Between the move, press and release that make one click of that path.
   /// A human click holds the button for around 80ms and no app requires it;
   /// 12ms keeps the three events in order on a busy renderer while the
   /// between-point cadence above stays the pace the app sees.
   static let pointerWithinClickUs: UInt32 = 12_000
+
+  /// The element's frame once two reads a beat apart agree on it. Costs one
+  /// beat on a window that is not moving, which a path of clicks never notices.
+  static func settledFrame(of el: AXElement) -> CGRect? {
+    guard var last = frame(of: el) else { return nil }
+    let deadline = Date().addingTimeInterval(1.5)
+    while Date() < deadline {
+      usleep(frameSettleUs)
+      guard let now = frame(of: el) else { return last }
+      if now == last { return now }
+      last = now
+    }
+    return last
+  }
+
+  /// Between the two frame reads above.
+  static let frameSettleUs: UInt32 = 120_000
 
   static func frame(of el: AXElement) -> CGRect? {
     var posRef: CFTypeRef?

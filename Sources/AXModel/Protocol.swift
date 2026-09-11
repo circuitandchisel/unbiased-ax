@@ -115,7 +115,12 @@ public struct PointerOutcome {
   public var landed: [CGPoint]
   public var skipped: Int
   public var blocked: PointerBlock?
-  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil) { self.landed = landed; self.skipped = skipped; self.blocked = blocked }
+  /// The pointer was put back where the user left it once the path was done.
+  public var pointerReturned: Bool
+  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil, pointerReturned: Bool = false) {
+    self.landed = landed; self.skipped = skipped; self.blocked = blocked
+    self.pointerReturned = pointerReturned
+  }
 }
 
 /// One command in the app's menu bar, read without opening a menu.
@@ -213,6 +218,11 @@ public protocol Backend: AnyObject {
   /// element's reported bounds can lag what the app is drawing, and the only
   /// authority on what is actually at a point is the app's own hit test.
   func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation
+  /// Make the app's window actually be where its coordinates say, bringing it
+  /// forward if it is on another Space. Returns whether it had to. Called
+  /// before the aim checks, because those hit-test the real screen: a window
+  /// the user cannot see answers them with whatever is in front of it.
+  func prepareForPointer(app: String) throws -> Bool
   /// The element holding keyboard focus, as its role and title, or nil when the
   /// app reports none. Typed text goes wherever this is.
   func focusedControl(app: String) throws -> (role: String, title: String?)?

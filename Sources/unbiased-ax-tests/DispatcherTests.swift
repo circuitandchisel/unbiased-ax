@@ -92,6 +92,7 @@ final class FakeBackend: Backend {
   /// is fixed at 0,0 200x100 so a fraction maps to an obvious number.
   var pointerCalls: [(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String])] = []
   var pointerFails: String? = nil
+  var raisedForPointer = 0
   /// A control that appears under the path while it is being clicked, the way
   /// a floating toolbar does: clicks stop before this index.
   var pointerBlockAt: PointerBlock? = nil
@@ -100,17 +101,19 @@ final class FakeBackend: Backend {
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
     clickCounts.append(clicks)
+    // The live backend brings the app forward when its window is not where the
+    // coordinates are, and puts the pointer back afterwards.
     let pts = path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
-    guard !hold, clicks == 1 else { return PointerOutcome(landed: pts) }
+    guard !hold, clicks == 1 else { return PointerOutcome(landed: pts, pointerReturned: true) }
     // Same rules as the live backend: single clicks are paced, a repeated
     // pixel is not clicked twice, and a control appearing under the path stops it.
     let plan = ClickPacing.plan(pts)
     var landed = plan.clicks.map(\.point)
     if let b = pointerBlockAt, b.index < landed.count {
       landed = Array(landed.prefix(b.index))
-      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b, pointerReturned: true)
     }
-    return PointerOutcome(landed: landed, skipped: plan.dropped)
+    return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: true)
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
   func typeText(app: String, text: String, focusId: Int?) throws {
@@ -123,6 +126,13 @@ final class FakeBackend: Backend {
   /// third point of a path and nothing under the first two.
   var pointerHitSequence: [HitRelation] = []
   var pointerHitCalls = 0
+  func prepareForPointer(app: String) throws -> Bool {
+    guard hideWindows || parkedWindow else { return false }
+    raisedForPointer += 1
+    // The fake's window comes back to this Space once it is asked for.
+    hideWindows = false
+    return true
+  }
   func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
     defer { pointerHitCalls += 1 }
     return pointerHitCalls < pointerHitSequence.count ? pointerHitSequence[pointerHitCalls] : pointerHitResult

@@ -424,6 +424,10 @@ public final class Dispatcher {
       // measured 2026-09-09, a floating toolbar sat over the bottom of a
       // drawing surface and the trace's last dozen clicks pressed its buttons.
       // Checked before anything is posted, so a bad point costs nothing.
+      // Bring the window to where its coordinates are BEFORE asking what is
+      // under them: a window on another Space answers the hit test with
+      // whatever is in front of it, which used to read as "the element moved".
+      let raisedForPointer = try backend.prepareForPointer(app: app)
       let toCheck = hold ? Array(aim.prefix(1)) : aim
       for (i, pt) in toCheck.enumerated() {
         let rel = try backend.pointerHit(app: app, id: anchor, point: pt)
@@ -442,6 +446,16 @@ public final class Dispatcher {
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = outcome.landed.map { ["x": Int($0.x), "y": Int($0.y)] }
       var notes: [String] = []
+      // Brought forward, and the pointer handed back. Both are things the user
+      // sees happen, so the caller is told rather than left to infer them.
+      if raisedForPointer {
+        out["raised"] = true
+        notes.append("Brought \(app) forward first: pointer input is posted at real screen coordinates, so its window had to be on this Space. Reading and pressing still work in the background; only the pointer needs this.")
+      }
+      if outcome.pointerReturned {
+        out["pointerReturned"] = true
+        notes.append("The pointer was put back where the user had left it.")
+      }
       // A control appeared under the path AFTER the up-front check passed —
       // a floating toolbar the app raises once drawing begins. The clicks
       // stopped in front of it; say where the drawing is left off.
