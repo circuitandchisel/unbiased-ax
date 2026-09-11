@@ -15,6 +15,8 @@ let logURL: URL = {
 }()
 let started = Date()
 let logQueue = DispatchQueue(label: "probe.recorder.log")
+/// Opened once, append-only: writes to it are atomic for lines this size.
+let logFD: Int32 = open(logURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
 
 func log(_ src: String, _ fields: [String: Any]) {
   var row = fields
@@ -25,8 +27,8 @@ func log(_ src: String, _ fields: [String: Any]) {
     guard let d = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
           var s = String(data: d, encoding: .utf8) else { return }
     s += "\n"
-    if let fh = try? FileHandle(forWritingTo: logURL) { fh.seekToEndOfFile(); fh.write(s.data(using: .utf8)!); try? fh.close() }
-    else { try? s.data(using: .utf8)!.write(to: logURL) }
+    // See ProbeTarget: one atomic append, because three processes share this file.
+    _ = s.withCString { write(logFD, $0, strlen($0)) }
   }
 }
 

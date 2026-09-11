@@ -26,7 +26,9 @@ if [ "${1:-}" != "--no-web" ]; then
     [ -n "$c" ] && [ -x "$c" ] && ELECTRON="$c" && break
   done
   if [ -n "$ELECTRON" ]; then
-    ELECTRON_RUN_AS_NODE= nohup "$ELECTRON" web-probe.cjs > "$HOME/cua-probe/web.out" 2>&1 &
+    # Absolute: Electron reads a bare name as a module to require, not a path,
+    # and silently falls back to its own welcome app when it cannot find it.
+    ELECTRON_RUN_AS_NODE= nohup "$ELECTRON" "$PWD/web-probe.cjs" > "$HOME/cua-probe/web.out" 2>&1 &
     disown || true
   else
     echo "no electron found; running without the Chromium surface"

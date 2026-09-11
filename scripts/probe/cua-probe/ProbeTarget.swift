@@ -22,6 +22,8 @@ let logURL: URL = {
   return dir.appendingPathComponent("probe.jsonl")
 }()
 let logQueue = DispatchQueue(label: "probe.log")
+/// Opened once, append-only: writes to it are atomic for lines this size.
+let logFD: Int32 = open(logURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
 let started = Date()
 
 func log(_ src: String, _ fields: [String: Any]) {
@@ -33,11 +35,9 @@ func log(_ src: String, _ fields: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
           var line = String(data: data, encoding: .utf8) else { return }
     line += "\n"
-    if let fh = try? FileHandle(forWritingTo: logURL) {
-      fh.seekToEndOfFile(); fh.write(line.data(using: .utf8)!); try? fh.close()
-    } else {
-      try? line.data(using: .utf8)!.write(to: logURL)
-    }
+    // Three processes share this file. Seek-then-write races and shreds lines;
+    // one write to a descriptor opened O_APPEND does not.
+    _ = line.withCString { write(logFD, $0, strlen($0)) }
   }
 }
 
