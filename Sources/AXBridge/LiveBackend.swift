@@ -348,11 +348,27 @@ public final class LiveBackend: Backend {
     // pointer — there is one — so it is borrowed for the length of the path
     // and handed back at the end, wherever the path finished and whatever went
     // wrong on the way.
+    // Whoever the user was working in before this click. Clicking a window
+    // activates its app, the same as a real click would, and an app left in
+    // front with a drawing tool selected takes over the cursor: measured
+    // 2026-09-11, the pointer turned into a pen and the user could not use
+    // their own machine for the length of the run. So the app is put back.
+    let frontBefore = NSWorkspace.shared.frontmostApplication
+    defer {
+      if let before = frontBefore,
+         before.processIdentifier != a.processIdentifier,
+         before.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier {
+        // A short settle first: the app we clicked may still be coming
+        // forward, and reactivating into that race just loses.
+        usleep(120_000)
+        before.activate(options: [])
+      }
+    }
     let cursorHome = CGEvent(source: nil)?.location
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
     let quiet = Self.postMouse != nil && f.isEmpty && clicks == 1
-    var movedPointer = !quiet
+    let movedPointer = !quiet
     defer {
       // Only worth putting back if it was taken.
       if movedPointer, let home = cursorHome {
