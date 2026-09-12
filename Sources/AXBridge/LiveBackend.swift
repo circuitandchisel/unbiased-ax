@@ -353,7 +353,8 @@ public final class LiveBackend: Backend {
     // front with a drawing tool selected takes over the cursor: measured
     // 2026-09-11, the pointer turned into a pen and the user could not use
     // their own machine for the length of the run. So the app is put back.
-    let frontBefore = NSWorkspace.shared.frontmostApplication
+    let frontBefore = frontBeforeRaise
+    frontBeforeRaise = nil
     defer {
       if let before = frontBefore,
          before.processIdentifier != a.processIdentifier,
@@ -461,13 +462,21 @@ public final class LiveBackend: Backend {
     return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
   }
 
+  /// Who was in front before a raise took it from them, if one did. Only a
+  /// focus change WE caused is undone; the one a click causes is what a click
+  /// is supposed to do, and undoing that pulls the app out from under its own
+  /// work — measured 2026-09-11, three drags each handed focus away from the
+  /// app being drawn in, and the run fell apart between them.
+  private var frontBeforeRaise: NSRunningApplication?
+
   public func prepareForPointer(app: String) throws -> Bool {
     let a = try resolve(app)
     func visible() -> Bool {
       guard parkedWindow(app: app) == nil, let wins = try? windows(app: app) else { return false }
       return wins.contains { $0.onSpace }
     }
-    if visible() { return false }
+    if visible() { frontBeforeRaise = nil; return false }
+    frontBeforeRaise = NSWorkspace.shared.frontmostApplication
     try? raise(app: app, windowId: nil)
     let deadline = Date().addingTimeInterval(2.0)
     while !visible(), Date() < deadline { usleep(80_000) }
