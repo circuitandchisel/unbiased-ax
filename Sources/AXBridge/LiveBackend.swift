@@ -369,7 +369,11 @@ public final class LiveBackend: Backend {
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
     let quiet = Self.postMouse != nil && f.isEmpty && clicks == 1
-    let movedPointer = !quiet
+    // A DRAG is the exception: holding the button across points drags the
+    // cursor with it, measured 2026-09-13 — a click leaves it alone, a drag
+    // ends with it at the last point. So a quiet drag still counts as taking
+    // the pointer, and still hands it back.
+    var movedPointer = !quiet
     defer {
       // Only worth putting back if it was taken.
       if movedPointer, let home = cursorHome {
@@ -398,11 +402,12 @@ public final class LiveBackend: Backend {
       if quiet, let post = Self.postMouse {
         // A drag is the button held down across the points: the same call with
         // the button still pressed is what makes it a drag rather than clicks.
+        movedPointer = true
         _ = post(points[0], 0, 1, 1)
         usleep(Self.pointerWithinClickUs)
         for pt in points.dropFirst() { _ = post(pt, 0, 1, 1); usleep(Self.pointerStepUs) }
         _ = post(points[points.count - 1], 0, 1, 0)
-        return PointerOutcome(landed: points, pointerReturned: false, movedPointer: false)
+        return PointerOutcome(landed: points, pointerReturned: cursorHome != nil, movedPointer: true)
       }
       post(.mouseMoved, points[0])
       post(.leftMouseDown, points[0])
