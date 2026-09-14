@@ -353,6 +353,17 @@ public final class LiveBackend: Backend {
     // front with a drawing tool selected takes over the cursor: measured
     // 2026-09-11, the pointer turned into a pen and the user could not use
     // their own machine for the length of the run. So the app is put back.
+    // A drag holds the mouse button down across several posts. If anything
+    // between the press and the release goes wrong, the button stays down as
+    // far as every app on the machine is concerned, and the user is left
+    // dragging something they never picked up. Released whatever happens.
+    var buttonIsDown: CGPoint?
+    defer {
+      if let at = buttonIsDown {
+        if let post = Self.postMouse { _ = post(at, 0, 1, 0) }
+        else { CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: at, mouseButton: .left)?.post(tap: .cghidEventTap) }
+      }
+    }
     let frontBefore = frontBeforeRaise
     frontBeforeRaise = nil
     defer {
@@ -404,15 +415,19 @@ public final class LiveBackend: Backend {
         // the button still pressed is what makes it a drag rather than clicks.
         movedPointer = true
         _ = post(points[0], 0, 1, 1)
+        buttonIsDown = points[0]
         usleep(Self.pointerWithinClickUs)
-        for pt in points.dropFirst() { _ = post(pt, 0, 1, 1); usleep(Self.pointerStepUs) }
+        for pt in points.dropFirst() { _ = post(pt, 0, 1, 1); buttonIsDown = pt; usleep(Self.pointerStepUs) }
         _ = post(points[points.count - 1], 0, 1, 0)
+        buttonIsDown = nil
         return PointerOutcome(landed: points, pointerReturned: cursorHome != nil, movedPointer: true)
       }
       post(.mouseMoved, points[0])
       post(.leftMouseDown, points[0])
-      for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
+      buttonIsDown = points[0]
+      for pt in points.dropFirst() { post(.leftMouseDragged, pt); buttonIsDown = pt }
       post(.leftMouseUp, points[points.count - 1])
+      buttonIsDown = nil
       return PointerOutcome(landed: points, pointerReturned: cursorHome != nil)
     } else if clicks == 1 {
       // Single clicks along a path — the shape of pen-tool tracing. Two clicks
