@@ -145,3 +145,45 @@ email while the target is silently made active — does not arise here at all.
 - The real target app, rather than a probe that was built to be easy to hit.
 - A target on another Space, which is where this desktop keeps its apps.
 - What a long path costs when half the moves are coalesced away.
+
+### And then the real target said no
+
+The probe app was built to be easy to hit, and it is. The app this work is
+actually for behaves differently, measured 2026-09-14 against Figma 126.8.18
+on Darwin 25.6, window on a second display, the pointer parked on a third:
+
+| Figma's state | targeted click | result |
+|---|---|---|
+| not the active app | on its canvas | **ignored** |
+| not the active app | on a panel tab | **ignored** |
+| the active app | on its canvas | **landed** — the selection cleared |
+
+So it is not that the route fails. The route is fine. This particular app
+discards pointer input aimed at it while it is not the active application,
+where a bare Electron window accepts the same thing happily. It is the case
+the source warns about — some targets reject input aimed at a pid — and it
+turns out to be the one that matters here.
+
+That leaves activating the app without raising its window as the only thing
+this could still buy. It does not work here. Both records post successfully
+and the front process does not move:
+
+```
+activate: defocus=0 focus=0
+PSN front before 00000000b7755b00  target 000000005ccff500  front after 00000000b7755b00
+WindowServer front changed to target: no
+```
+
+The PSNs are distinct and correct — the first is the app that was in front,
+the second is the target. The calls return success and change nothing. So on
+this OS the 248-byte record either has a different shape or no longer has this
+effect, and the click that follows it is still discarded.
+
+### What this is worth
+
+For the app this bridge cares about: nothing, today. It must be active to
+accept a click, and once it is active the route we already use delivers
+without moving the cursor either. Targeted posting would be the better
+mechanism for a target that accepts it while inactive, and `slprobe` is how to
+find out whether a given one does — ask it before assuming, in both
+directions. This file exists because assuming was wrong twice.

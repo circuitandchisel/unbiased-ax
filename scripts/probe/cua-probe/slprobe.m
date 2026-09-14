@@ -26,6 +26,7 @@ static void *S(const char *n) { return dlsym(RTLD_DEFAULT, n); }
 
 static int gTransport = 0;   // 0 both, 1 SLEventPostToPid only, 2 CGEventPostToPid only
 static BOOL gStampFields = YES;
+static BOOL gRestore = NO;
 
 
 static NSString *frontName(void) {
@@ -64,7 +65,14 @@ static BOOL activateWithoutRaise(pid_t pid, uint32_t wid) {
   buf[0x3E] = (wid >> 16) & 0xFF; buf[0x3F] = (wid >> 24) & 0xFF;
   buf[0x8A] = 0x02; int defocus = post(prev, buf);
   buf[0x8A] = 0x01; int focus = post(target, buf);
+  uint8_t after[8] = {0};
+  getFront(after);
   printf("  activate: defocus=%d focus=%d\n", defocus, focus);
+  printf("  PSN front before %02x%02x%02x%02x%02x%02x%02x%02x  target %02x%02x%02x%02x%02x%02x%02x%02x  front after %02x%02x%02x%02x%02x%02x%02x%02x\n",
+    prev[0],prev[1],prev[2],prev[3],prev[4],prev[5],prev[6],prev[7],
+    target[0],target[1],target[2],target[3],target[4],target[5],target[6],target[7],
+    after[0],after[1],after[2],after[3],after[4],after[5],after[6],after[7]);
+  printf("  WindowServer front changed to target: %s\n", memcmp(after, target, 8) == 0 ? "YES" : "no");
   return defocus == 0 && focus == 0;
 }
 
@@ -99,7 +107,7 @@ static void postBoth(CGEventRef e, pid_t pid) {
 
 // Every window a pid owns, so a target can be named without guessing.
 static void listWindows(pid_t pid) {
-  CFArrayRef all = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+  CFArrayRef all = CGWindowListCopyWindowInfo(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
   for (CFIndex i = 0; i < CFArrayGetCount(all); i++) {
     NSDictionary *w = (__bridge NSDictionary *)CFArrayGetValueAtIndex(all, i);
     if ([w[(id)kCGWindowOwnerPID] intValue] != pid) continue;
@@ -146,6 +154,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     else if (!strcmp(argv[i], "--sl")) gTransport = 1;
     else if (!strcmp(argv[i], "--cg")) gTransport = 2;
     else if (!strcmp(argv[i], "--no-fields")) gStampFields = NO;
+    else if (!strcmp(argv[i], "--restore")) gRestore = YES;
     else if (!strcmp(argv[i], "--windows")) { listWindows(atoi(argv[i+1])); return 0; }
     else if (!strcmp(argv[i], "--path") || !strcmp(argv[i], "--drag")) {
       BOOL held = !strcmp(argv[i], "--drag");
@@ -170,6 +179,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   BOOL hasWin = (argc - i >= 6);
   double wx = hasWin ? atof(argv[i+4]) : 0, wy = hasWin ? atof(argv[i+5]) : 0;
 
+  NSRunningApplication *prevApp = NSWorkspace.sharedWorkspace.frontmostApplication;
   CGPoint home = CGEventGetLocation(CGEventCreate(NULL));
   printf("pid %d wid %u at (%.0f,%.0f)%s\n", pid, wid, at.x, at.y, hasWin ? " window-local set" : "");
   printf("  front before: %s   pointer at (%.0f,%.0f)\n", frontName().UTF8String, home.x, home.y);
@@ -191,6 +201,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   if (src) CFRelease(src);
 
   usleep(120000);
+  if (gRestore && prevApp && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != prevApp.processIdentifier) {
+    [prevApp activateWithOptions:0];
+    usleep(250000);
+    printf("  restored front to %s\n", prevApp.localizedName.UTF8String);
+  }
   CGPoint now = CGEventGetLocation(CGEventCreate(NULL));
   printf("  posted move+down+up (both transports)\n");
   printf("  front after: %s   pointer now (%.0f,%.0f) — moved %s\n",
