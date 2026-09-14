@@ -319,15 +319,17 @@ public final class LiveBackend: Backend {
   /// click would land on whatever is at that spot instead.
   public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     let a = try resolve(app)
-    // Pointer input is the one thing here that cannot work in the background:
-    // it is posted at real screen coordinates, so the window has to be where
-    // those coordinates are. This used to refuse and hand the problem back,
-    // which cost a detour every time. Measured 2026-09-11 against the
-    // comparison agent: it brings the app forward for exactly this reason and
-    // never moves the pointer, because it delivers events to the window
-    // itself — a route that is not available to us (per-process mouse
-    // delivery is ignored by both Chromium and AppKit apps on this macOS,
-    // measured). So bring the app forward, then put the pointer back.
+    // Three routes, best first. Addressing the window needs nothing raised and
+    // no pointer. Failing that, a quiet click delivers at a point without the
+    // cursor going there. Failing that, the event route posts at real screen
+    // coordinates, which means the window has to be where those coordinates
+    // are — so the app is brought forward and the pointer handed back.
+    //
+    // The first route was written off once, on a measurement that posted a
+    // bare event with no target pid, no window number and no window-local
+    // point, and concluded per-process delivery was ignored. It is not: see
+    // BackgroundPointer, which also records the coordinate mistake that hid
+    // this for a day.
     // The frame is read AFTER the app is forward (prepareForPointer ran first):
     // coming from another Space or out of Stage Manager can move and resize it.
     let (_, el) = try element(app, id)
@@ -377,13 +379,18 @@ public final class LiveBackend: Backend {
       }
     }
     let cursorHome = CGEvent(source: nil)?.location
+    // Addressing the window is the best of the three when it is available: no
+    // raise, no Space switch, no pointer borrowed. Modifiers and multi-clicks
+    // are excluded for the same reason as below — this route carries neither.
+    let target = (Self.backgroundPointer && BackgroundPointer.available && f.isEmpty && clicks == 1)
+      ? Self.windowTarget(of: el) : nil
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
-    let quiet = Self.quietPointer && Self.postMouse != nil && f.isEmpty && clicks == 1
+    let quiet = target == nil && Self.quietPointer && Self.postMouse != nil && f.isEmpty && clicks == 1
     // A drag takes the cursor whichever route carries it — holding the button
     // across points drags the cursor with it, measured 2026-09-13 — so the
     // quiet route has nothing to offer a drag and does not get one.
-    var movedPointer = !quiet
+    var movedPointer = !quiet && target == nil
     defer {
       // Only worth putting back if it was taken.
       if movedPointer, let home = cursorHome {
@@ -409,7 +416,12 @@ public final class LiveBackend: Backend {
       usleep(gap)
     }
     if hold, points.count > 1 {
-      // Always the event route. The quiet one can put a click where the
+      if let target {
+        BackgroundPointer.drag(pid: a.processIdentifier, windowId: target.id,
+                               path: points.map { (screen: $0, local: Self.local($0, target.origin)) })
+        return PointerOutcome(landed: points, pointerReturned: false, movedPointer: false, backgrounded: true)
+      }
+      // Otherwise the event route. The quiet one can put a click where the
       // pointer never went, but it cannot say "moved while held": it re-posts
       // the same button state at each point, with no movement before the
       // press. A surface that begins a drag on the hover and follows it by
@@ -453,7 +465,10 @@ public final class LiveBackend: Backend {
         // release of one click are one gesture and want only a moment apart.
         // Measured 2026-09-10: a 112-point trace paced at 70ms after every
         // event took 33s, 23s of which were the two intra-click gaps.
-        if quiet {
+        if let target {
+          BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
+                                  screen: step.point, local: Self.local(step.point, target.origin))
+        } else if quiet {
           quietClick(step.point)
         } else {
           post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
@@ -462,7 +477,8 @@ public final class LiveBackend: Backend {
         }
         landed.append(step.point)
       }
-      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil,
+                            movedPointer: movedPointer, backgrounded: target != nil)
     } else {
       for pt in points {
         post(.mouseMoved, pt)
@@ -488,6 +504,11 @@ public final class LiveBackend: Backend {
 
   public func prepareForPointer(app: String) throws -> Bool {
     let a = try resolve(app)
+    // Nothing to prepare when the click can be addressed at the window: that
+    // route needs no raise, no Space switch and no pointer. Whether it is
+    // usable for a given ELEMENT is decided in pointer(), which raises there if
+    // it turns out the window cannot be addressed after all.
+    if Self.backgroundPointer, BackgroundPointer.available { frontBeforeRaise = nil; return false }
     func visible() -> Bool {
       guard parkedWindow(app: app) == nil, let wins = try? windows(app: app) else { return false }
       return wins.contains { $0.onSpace }
@@ -728,6 +749,31 @@ public final class LiveBackend: Backend {
   /// fallback.
   /// Read once: the switch is for a whole run, not per call.
   static let quietPointer = QuietPointer.enabled(ProcessInfo.processInfo.environment)
+  static let backgroundPointer = BackgroundPointerRoute.enabled(ProcessInfo.processInfo.environment)
+
+  /// The window an element sits in: its window-server id, and where
+  /// accessibility says its top-left corner is.
+  ///
+  /// The origin has to come from accessibility. A screenshot will not do: for a
+  /// window on another Space the window server may hold only a small skewed
+  /// thumbnail, and a point worked out from that is wrong by whatever the
+  /// thumbnail's scale happens to be — measured 138x157 standing in for
+  /// 1249x900, so by a factor of nine.
+  static func windowTarget(of el: AXElement) -> (id: CGWindowID, origin: CGPoint)? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, kAXWindowAttribute as CFString, &v) == .success,
+          let raw = v, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+    let window = AXElement(ref: unsafeBitCast(raw, to: AXUIElement.self))
+    guard let id = RemoteToken.windowId(of: window.ref), id != 0,
+          let frame = frame(of: window) else { return nil }
+    return (id, frame.origin)
+  }
+
+  /// A screen point in the window's own coordinates, which is what an event
+  /// addressed at a window is aimed with.
+  static func local(_ screen: CGPoint, _ origin: CGPoint) -> CGPoint {
+    CGPoint(x: screen.x - origin.x, y: screen.y - origin.y)
+  }
 
   private typealias PostMouseFn = @convention(c) (CGPoint, Int32, UInt32, Int32) -> Int32
   private static let postMouse: PostMouseFn? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGPostMouseEvent")

@@ -96,24 +96,33 @@ final class FakeBackend: Backend {
   /// A control that appears under the path while it is being clicked, the way
   /// a floating toolbar does: clicks stop before this index.
   var pointerBlockAt: PointerBlock? = nil
+  /// The window can be addressed directly, so nothing is raised and the
+  /// pointer is never borrowed.
+  var backgroundRoute = false
   func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     if let why = pointerFails { throw BridgeError.actionFailed(why) }
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
     clickCounts.append(clicks)
     // The live backend brings the app forward when its window is not where the
-    // coordinates are, and puts the pointer back afterwards.
+    // coordinates are, and puts the pointer back afterwards — unless it can
+    // address the window itself, which needs neither.
     let pts = path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
-    guard !hold, clicks == 1 else { return PointerOutcome(landed: pts, pointerReturned: true) }
+    let back = backgroundRoute
+    guard !hold, clicks == 1 else {
+      return PointerOutcome(landed: pts, pointerReturned: !back, movedPointer: !back, backgrounded: back)
+    }
     // Same rules as the live backend: single clicks are paced, a repeated
     // pixel is not clicked twice, and a control appearing under the path stops it.
     let plan = ClickPacing.plan(pts)
     var landed = plan.clicks.map(\.point)
     if let b = pointerBlockAt, b.index < landed.count {
       landed = Array(landed.prefix(b.index))
-      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b, pointerReturned: true)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b,
+                            pointerReturned: !back, movedPointer: !back, backgrounded: back)
     }
-    return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: true)
+    return PointerOutcome(landed: landed, skipped: plan.dropped,
+                          pointerReturned: !back, movedPointer: !back, backgrounded: back)
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
   func typeText(app: String, text: String, focusId: Int?) throws {
@@ -127,6 +136,8 @@ final class FakeBackend: Backend {
   var pointerHitSequence: [HitRelation] = []
   var pointerHitCalls = 0
   func prepareForPointer(app: String) throws -> Bool {
+    // Addressing the window needs no raise, however far away the window is.
+    if backgroundRoute { return false }
     guard hideWindows || parkedWindow else { return false }
     raisedForPointer += 1
     // The fake's window comes back to this Space once it is asked for.

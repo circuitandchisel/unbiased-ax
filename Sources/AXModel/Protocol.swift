@@ -120,10 +120,14 @@ public struct PointerOutcome {
   /// The user's pointer was used at all. False is the good case: the clicks
   /// were delivered to the point without the cursor ever going there.
   public var movedPointer: Bool
+  /// Delivered to the window itself, so nothing was raised and the window
+  /// stayed on whatever Space it was on.
+  public var backgrounded: Bool
   public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil,
-              pointerReturned: Bool = false, movedPointer: Bool = true) {
+              pointerReturned: Bool = false, movedPointer: Bool = true, backgrounded: Bool = false) {
     self.landed = landed; self.skipped = skipped; self.blocked = blocked
     self.pointerReturned = pointerReturned; self.movedPointer = movedPointer
+    self.backgrounded = backgrounded
   }
 }
 

@@ -452,7 +452,11 @@ public final class Dispatcher {
         out["raised"] = true
         notes.append("Brought \(app) forward first: pointer input is posted at real screen coordinates, so its window had to be on this Space. Reading and pressing still work in the background; only the pointer needs this.")
       }
-      if !outcome.movedPointer {
+      if outcome.backgrounded {
+        out["backgrounded"] = true
+        out["pointerUntouched"] = true
+        notes.append("Delivered to the window itself: \(app) was not brought forward, its window stayed on whatever Space it was on, and the user's pointer never moved.")
+      } else if !outcome.movedPointer {
         out["pointerUntouched"] = true
         notes.append("The user's pointer was not moved: the clicks were delivered to the window where they landed, so whatever they were doing with the mouse was not interrupted.")
       } else if outcome.pointerReturned {

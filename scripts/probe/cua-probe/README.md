@@ -146,44 +146,54 @@ email while the target is silently made active — does not arise here at all.
 - A target on another Space, which is where this desktop keeps its apps.
 - What a long path costs when half the moves are coalesced away.
 
-### And then the real target said no
+### And then the real target said no — twice, and both were my errors
 
-The probe app was built to be easy to hit, and it is. The app this work is
-actually for behaves differently, measured 2026-09-14 against Figma 126.8.18
-on Darwin 25.6, window on a second display, the pointer parked on a third:
+The first round of this concluded the real target rejects a click aimed at it
+while it is not the active app. That was wrong twice over, and the corrections
+matter more than the original claim:
 
-| Figma's state | targeted click | result |
-|---|---|---|
-| not the active app | on its canvas | **ignored** |
-| not the active app | on a panel tab | **ignored** |
-| the active app | on its canvas | **landed** — the selection cleared |
+**The pid was stale.** Those events went to a process that had already exited.
+Read the pid fresh every time; an app that restarts keeps its name and loses
+its number.
 
-So it is not that the route fails. The route is fine. This particular app
-discards pointer input aimed at it while it is not the active application,
-where a bare Electron window accepts the same thing happily. It is the case
-the source warns about — some targets reject input aimed at a pid — and it
-turns out to be the one that matters here.
+**The window-local point came from a capture.** For a window on another Space
+the window server may hold only a small skewed thumbnail — measured 138x157
+standing in for a window that is really 1249x900, so a point taken from it is
+wrong by a factor of nine. The driver this sequence came from derives its point
+that way and therefore refuses ("click point is outside the retained image"),
+which is the right thing for it to do and nothing to do with the app. Take the
+frame from the accessibility API instead and the same events land.
 
-That leaves activating the app without raising its window as the only thing
-this could still buy. It does not work here. Both records post successfully
-and the front process does not move:
+**`activate_without_raise` was never broken either.** Both records posting with
+status 0 is the success condition; it flips an app's internal active/key notion
+and is not meant to move the window server's front process, so watching
+`_SLPSGetFrontProcess` afterwards and seeing no change proves nothing. An
+earlier version of this file said otherwise. It was measuring the wrong thing.
 
-```
-activate: defocus=0 focus=0
-PSN front before 00000000b7755b00  target 000000005ccff500  front after 00000000b7755b00
-WindowServer front changed to target: no
-```
+### What actually happens, measured 2026-09-14
 
-The PSNs are distinct and correct — the first is the app that was in front,
-the second is the target. The calls return success and change nothing. So on
-this OS the 248-byte record either has a different shape or no longer has this
-effect, and the click that follows it is still discarded.
+Against Figma 126.8.18 on Darwin 25.6, window off-Space, another app frontmost,
+pointer parked and watched throughout:
+
+| | result |
+|---|---|
+| click on the canvas | **lands** — selects, and deselects again |
+| held path across the canvas | **lands** — carries a marquee selection |
+| app brought forward | no |
+| window moved to this Space | no |
+| user's pointer moved | no |
+
+Five state changes, each confirmed by reading the app back rather than by
+looking at a screenshot. Pressure and field 45 are not needed on this route,
+unlike the `CGPostMouseEvent` one, where a drag without them arrives as moves
+with no button held.
+
+So the driver's refusal to carry background drags is a property of where it
+gets its coordinates, not of what the events can do.
 
 ### What this is worth
 
-For the app this bridge cares about: nothing, today. It must be active to
-accept a click, and once it is active the route we already use delivers
-without moving the cursor either. Targeted posting would be the better
-mechanism for a target that accepts it while inactive, and `slprobe` is how to
-find out whether a given one does — ask it before assuming, in both
-directions. This file exists because assuming was wrong twice.
+Everything, for this bridge — it already reads the accessibility frame, which
+is the one ingredient the refusal turned on. `slprobe --cua` and
+`slprobe --cua-drag` are the measurement; `Sources/AXBridge/BackgroundPointer.swift`
+is the route built from it.

@@ -43,22 +43,3 @@ public enum PathGeometry {
     return d1 * d2 < 0 && d3 * d4 < 0
   }
 }
-
-
-/// Whether clicks go out by the route that leaves the user's pointer alone.
-///
-/// On by default. `UNBIASED_AX_QUIET_POINTER=0` sends them the ordinary way
-/// instead, which moves the pointer and puts it back. The switch exists
-/// because the quiet route creates a state no real click does — the event
-/// says the pointer is inside the window while the system pointer is
-/// somewhere else entirely — and an app is free to consult both. It is the
-/// one difference between the runs that finished and the ones that stopped
-/// halfway, and a switch is how that gets settled by measurement instead of
-/// argument.
-public enum QuietPointer {
-  public static func enabled(_ env: [String: String]) -> Bool {
-    guard let raw = env["UNBIASED_AX_QUIET_POINTER"]?.trimmingCharacters(in: .whitespaces).lowercased(),
-          !raw.isEmpty else { return true }
-    return !["0", "false", "no", "off"].contains(raw)
-  }
-}
