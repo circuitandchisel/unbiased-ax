@@ -380,10 +380,9 @@ public final class LiveBackend: Backend {
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
     let quiet = Self.quietPointer && Self.postMouse != nil && f.isEmpty && clicks == 1
-    // A DRAG is the exception: holding the button across points drags the
-    // cursor with it, measured 2026-09-13 — a click leaves it alone, a drag
-    // ends with it at the last point. So a quiet drag still counts as taking
-    // the pointer, and still hands it back.
+    // A drag takes the cursor whichever route carries it — holding the button
+    // across points drags the cursor with it, measured 2026-09-13 — so the
+    // quiet route has nothing to offer a drag and does not get one.
     var movedPointer = !quiet
     defer {
       // Only worth putting back if it was taken.
@@ -410,25 +409,23 @@ public final class LiveBackend: Backend {
       usleep(gap)
     }
     if hold, points.count > 1 {
-      if quiet, let post = Self.postMouse {
-        // A drag is the button held down across the points: the same call with
-        // the button still pressed is what makes it a drag rather than clicks.
-        movedPointer = true
-        _ = post(points[0], 0, 1, 1)
-        buttonIsDown = points[0]
-        usleep(Self.pointerWithinClickUs)
-        for pt in points.dropFirst() { _ = post(pt, 0, 1, 1); buttonIsDown = pt; usleep(Self.pointerStepUs) }
-        _ = post(points[points.count - 1], 0, 1, 0)
-        buttonIsDown = nil
-        return PointerOutcome(landed: points, pointerReturned: cursorHome != nil, movedPointer: true)
-      }
+      // Always the event route. The quiet one can put a click where the
+      // pointer never went, but it cannot say "moved while held": it re-posts
+      // the same button state at each point, with no movement before the
+      // press. A surface that begins a drag on the hover and follows it by
+      // deltas — a canvas, a small handle — then sees nothing to drag.
+      // Measured 2026-09-14: quietly, the drag that draws a shape drew none
+      // and a shape's own handle did not move; the same three drags took
+      // first time this way. The cursor is taken either way, so this costs
+      // the user nothing.
+      movedPointer = true
       post(.mouseMoved, points[0])
       post(.leftMouseDown, points[0])
       buttonIsDown = points[0]
       for pt in points.dropFirst() { post(.leftMouseDragged, pt); buttonIsDown = pt }
       post(.leftMouseUp, points[points.count - 1])
       buttonIsDown = nil
-      return PointerOutcome(landed: points, pointerReturned: cursorHome != nil)
+      return PointerOutcome(landed: points, pointerReturned: cursorHome != nil, movedPointer: true)
     } else if clicks == 1 {
       // Single clicks along a path — the shape of pen-tool tracing. Two clicks
       // within the double-click radius and interval ARE a double-click, whoever
