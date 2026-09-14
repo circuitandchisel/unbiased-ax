@@ -379,7 +379,7 @@ public final class LiveBackend: Backend {
     let cursorHome = CGEvent(source: nil)?.location
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
-    let quiet = Self.postMouse != nil && f.isEmpty && clicks == 1
+    let quiet = Self.quietPointer && Self.postMouse != nil && f.isEmpty && clicks == 1
     // A DRAG is the exception: holding the button across points drags the
     // cursor with it, measured 2026-09-13 — a click leaves it alone, a drag
     // ends with it at the last point. So a quiet drag still counts as taking
@@ -729,6 +729,9 @@ public final class LiveBackend: Backend {
   /// the only combination that matches. Deprecated since 10.6, still the only
   /// way, so it is resolved rather than linked and the old route stays as a
   /// fallback.
+  /// Read once: the switch is for a whole run, not per call.
+  static let quietPointer = QuietPointer.enabled(ProcessInfo.processInfo.environment)
+
   private typealias PostMouseFn = @convention(c) (CGPoint, Int32, UInt32, Int32) -> Int32
   private static let postMouse: PostMouseFn? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGPostMouseEvent")
     .map { unsafeBitCast($0, to: PostMouseFn.self) }

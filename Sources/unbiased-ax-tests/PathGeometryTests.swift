@@ -81,3 +81,18 @@ func runPathGeometryTests() {
     try expectEqual(b.pointerCalls.count, 1)
   }
 }
+
+func runQuietPointerTests() {
+  print("The quiet-pointer switch")
+  test("on unless the environment turns it off") {
+    try expect(QuietPointer.enabled([:]))
+    try expect(QuietPointer.enabled(["UNBIASED_AX_QUIET_POINTER": ""]))
+    try expect(QuietPointer.enabled(["UNBIASED_AX_QUIET_POINTER": "1"]))
+    try expect(QuietPointer.enabled(["UNBIASED_AX_QUIET_POINTER": "yes"]))
+  }
+  test("the ways of saying no all work, whatever the case and spacing") {
+    for off in ["0", "false", "FALSE", "No", " off "] {
+      try expect(!QuietPointer.enabled(["UNBIASED_AX_QUIET_POINTER": off]), "\(off) should turn it off")
+    }
+  }
+}

@@ -37,5 +37,6 @@ runTypeTests()
 runServerTests()
 runPathGeometryTests()
 runPointerRaiseTests()
+runQuietPointerTests()
 
 finish()
