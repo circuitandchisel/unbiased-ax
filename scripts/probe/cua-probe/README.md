@@ -81,3 +81,67 @@ how a drawn agent cursor would register.
   cannot be created it says so in the log and on stdout rather than failing
   quietly.
 - Nothing here modifies, consumes or delays any input. The tap is listen-only.
+
+## slprobe — targeted delivery, measured
+
+`build/slprobe` posts one mouse event straight at a process instead of through
+the shared event stream, and reports what it took. It exists because an
+earlier round of this work concluded that posting to a pid "never delivers"
+mouse input. That was measured on a bare event. It was wrong.
+
+```bash
+build/slprobe --windows <pid>                       # window numbers to aim at
+build/slprobe --cg --no-activate <pid> <wid> <screenX> <screenY> <winX> <winY>
+build/slprobe --cg --drag <pid> <wid> <winOriginX> <winOriginY> x1,y1 x2,y2 …
+```
+
+Flags isolate one ingredient at a time: `--sl` posts only through
+`SLEventPostToPid`, `--cg` only through the public `CGEventPostToPid`,
+`--no-fields` drops the routing fields, omitting the window-local pair drops
+the window location, `--no-activate` leaves focus alone and `--activate-only`
+changes focus without posting.
+
+### What the matrix says (2026-09-14, native AppKit target and Chromium)
+
+| what was posted | Chromium received |
+|---|---|
+| routing fields + window location, either transport | **yes** |
+| routing fields, no window location | no |
+| window location, no routing fields | no |
+| neither — a bare event posted to the pid | no |
+
+Both ingredients are needed and neither alone is enough. The transport is not
+one of the ingredients: the public `CGEventPostToPid` does it, and the private
+`SLEventPostToPid` adds nothing. Posting through both delivers the event
+twice.
+
+The receiving app was not frontmost, its window was not key, the real pointer
+was hundreds of points away and never moved, and no focus was changed.
+
+A drag needs one thing more: `kCGMouseEventPressure` of 1 on the press and on
+each dragged point, plus the button mask in field 45. Without them the dragged
+points arrive as ordinary moves with no button held, and a canvas draws
+nothing. With them the page reports `buttons: 1` throughout. Chromium still
+coalesces the moves — about half of them at 20ms spacing — so this carries a
+gesture from one place to another, not a faithful freehand stroke.
+
+### Ingredients
+
+1. `CGEventCreateMouseEvent`, HID-state source.
+2. Fields: 1 click state, 2 pressure, 3 button, 7 subtype, **40 the target
+   pid**, 45 button mask, **51 / 91 / 92 the window number**, 58 a click-group
+   id shared by one gesture.
+3. **`CGEventSetWindowLocation(event, localX, localY)`** — the window-local
+   point. Private symbol; resolves today, so anything using it has to check
+   first and have somewhere else to go.
+4. `CGEventPostToPid(pid, event)`.
+
+No activation, no `SLPSPostEventRecordTo`, no 248-byte record, no focus
+change. Which means the hazard worth worrying about — a person typing an
+email while the target is silently made active — does not arise here at all.
+
+### Not yet measured
+
+- The real target app, rather than a probe that was built to be easy to hit.
+- A target on another Space, which is where this desktop keeps its apps.
+- What a long path costs when half the moves are coalesced away.
