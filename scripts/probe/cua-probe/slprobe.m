@@ -23,10 +23,16 @@ typedef int  (*MainConnFn)(void);
 typedef void (*SetWinLocFn)(void *, double, double);
 
 static void *S(const char *n) { return dlsym(RTLD_DEFAULT, n); }
+static void cuaClick(pid_t pid, uint32_t wid, CGPoint at, double lx, double ly);
+static void cuaDrag(pid_t pid, uint32_t wid, CGPoint a, double alx, double aly, CGPoint b, double blx, double bly);
+extern BOOL gPressureFwd;
+static BOOL activateWithoutRaise(pid_t pid, uint32_t wid);
 
 static int gTransport = 0;   // 0 both, 1 SLEventPostToPid only, 2 CGEventPostToPid only
 static BOOL gStampFields = YES;
 static BOOL gRestore = NO;
+static BOOL gCua = NO;
+static BOOL gPressure;
 
 
 static NSString *frontName(void) {
@@ -155,6 +161,24 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     else if (!strcmp(argv[i], "--cg")) gTransport = 2;
     else if (!strcmp(argv[i], "--no-fields")) gStampFields = NO;
     else if (!strcmp(argv[i], "--restore")) gRestore = YES;
+    else if (!strcmp(argv[i], "--cua")) gCua = YES;
+    else if (!strcmp(argv[i], "--pressure")) gPressure = YES;
+    else if (!strcmp(argv[i], "--cua-drag")) {
+      pid_t tp = atoi(argv[i+1]); uint32_t tw = (uint32_t)strtoul(argv[i+2], NULL, 10);
+      CGPoint a = CGPointMake(atof(argv[i+3]), atof(argv[i+4]));
+      double alx = atof(argv[i+5]), aly = atof(argv[i+6]);
+      CGPoint b = CGPointMake(atof(argv[i+7]), atof(argv[i+8]));
+      double blx = atof(argv[i+9]), bly = atof(argv[i+10]);
+      CGPoint h = CGEventGetLocation(CGEventCreate(NULL));
+      printf("drag (%.0f,%.0f)->(%.0f,%.0f), front %s, pointer (%.0f,%.0f)\n",
+             a.x, a.y, b.x, b.y, frontName().UTF8String, h.x, h.y);
+      cuaDrag(tp, tw, a, alx, aly, b, blx, bly);
+      usleep(200000);
+      CGPoint n = CGEventGetLocation(CGEventCreate(NULL));
+      printf("  after: front %s, pointer (%.0f,%.0f) — moved %s\n", frontName().UTF8String, n.x, n.y,
+             (fabs(n.x-h.x) < 2 && fabs(n.y-h.y) < 2) ? "NO" : "YES");
+      return 0;
+    }
     else if (!strcmp(argv[i], "--windows")) { listWindows(atoi(argv[i+1])); return 0; }
     else if (!strcmp(argv[i], "--path") || !strcmp(argv[i], "--drag")) {
       BOOL held = !strcmp(argv[i], "--drag");
@@ -184,10 +208,11 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   printf("pid %d wid %u at (%.0f,%.0f)%s\n", pid, wid, at.x, at.y, hasWin ? " window-local set" : "");
   printf("  front before: %s   pointer at (%.0f,%.0f)\n", frontName().UTF8String, home.x, home.y);
 
-  if (!noActivate) { activateWithoutRaise(pid, wid); usleep(50000); }
+  if (!noActivate && !gCua) { activateWithoutRaise(pid, wid); usleep(50000); }
   printf("  front after activate: %s\n", frontName().UTF8String);
   if (activateOnly) return 0;
 
+  if (gCua) { cuaClick(pid, wid, at, wx, wy); goto after; }
   CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
   int64_t group = (int64_t)(CFAbsoluteTimeGetCurrent() * 1e6);
   CGEventRef moved = CGEventCreateMouseEvent(src, kCGEventMouseMoved, at, kCGMouseButtonLeft);
@@ -200,6 +225,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
   stamp(up, pid, wid, 1, group, hasWin, wx, wy); postBoth(up, pid); CFRelease(up);
   if (src) CFRelease(src);
 
+after:
   usleep(120000);
   if (gRestore && prevApp && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != prevApp.processIdentifier) {
     [prevApp activateWithOptions:0];
@@ -207,9 +233,131 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     printf("  restored front to %s\n", prevApp.localizedName.UTF8String);
   }
   CGPoint now = CGEventGetLocation(CGEventCreate(NULL));
-  printf("  posted move+down+up (both transports)\n");
+  if (!gCua) printf("  posted move+down+up (both transports)\n");
   printf("  front after: %s   pointer now (%.0f,%.0f) — moved %s\n",
          frontName().UTF8String, now.x, now.y,
          (fabs(now.x - home.x) < 2 && fabs(now.y - home.y) < 2) ? "NO" : "YES");
   return 0;
 } }
+
+// ── The documented background-click sequence, replicated exactly ────────────
+// Transcribed from cua-driver (MIT, Copyright (c) 2025 Cua AI, Inc.),
+// crates/platform-macos/src/input/mouse.rs `click_at_xy_chromium`. Replicated
+// here rather than linked, so the mechanism can be measured against this
+// bridge's own routes on one machine.
+//
+// The pieces this probe was missing before: field 0 carries a gesture PHASE,
+// not a number; a primer press lands off-screen at (-1,-1) first, where it can
+// reach no element but still satisfies the receiver's user-activation gate;
+// a frame of quiet separates primer from target so the two are not read as one
+// run-on gesture; and the whole thing goes through the private poster, with the
+// public one only as a fallback.
+
+typedef void (*SetIntFieldFn)(void *, uint32_t, int64_t);
+
+static void cuaField(CGEventRef e, uint32_t field, int64_t value) {
+  static SetIntFieldFn slSet = NULL;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ slSet = (SetIntFieldFn)S("SLEventSetIntegerValueField"); });
+  if (slSet) slSet((void *)e, field, value);
+  else CGEventSetIntegerValueField(e, (CGEventField)field, value);
+}
+
+static void cuaPost(CGEventRef e, pid_t pid) {
+  PostToPidFn sl = (PostToPidFn)S("SLEventPostToPid");
+  if (sl) sl(pid, (void *)e);
+  else CGEventPostToPid(pid, e);
+}
+
+/// One event of the sequence. `phase` is field 0: 1 primer-down, 2 a move or
+/// primer-up, 3 the target press and release.
+static void cuaSend(CGEventSourceRef src, CGEventType type, CGPoint at, double lx, double ly,
+                    pid_t pid, uint32_t wid, int64_t clickState, int64_t phase, int64_t group) {
+  CGEventRef e = CGEventCreateMouseEvent(src, type, at, kCGMouseButtonLeft);
+  if (!e) return;
+  cuaField(e, 0, phase);
+  cuaField(e, 1, clickState);
+  cuaField(e, 3, 0);
+  cuaField(e, 7, 3);
+  cuaField(e, 40, pid);
+  if (wid) { cuaField(e, 51, wid); cuaField(e, 91, wid); cuaField(e, 92, wid); }
+  cuaField(e, 58, group);
+  SetWinLocFn setWinLoc = (SetWinLocFn)S("CGEventSetWindowLocation");
+  if (setWinLoc) setWinLoc((void *)e, lx, ly);
+  cuaPost(e, pid);
+  CFRelease(e);
+}
+
+static void cuaClick(pid_t pid, uint32_t wid, CGPoint at, double lx, double ly) {
+  printf("  activate, then move, off-screen primer, target\n");
+  activateWithoutRaise(pid, wid);
+  usleep(50000);                                   // AppKit settles its routing
+  CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  int64_t group = (int64_t)(CFAbsoluteTimeGetCurrent() * 1e6);   // one gesture
+  CGPoint off = CGPointMake(-1, -1);
+  cuaSend(src, kCGEventMouseMoved,    at,  lx,  ly, pid, wid, 0, 2, group);
+  usleep(15000);
+  cuaSend(src, kCGEventLeftMouseDown, off, -1, -1, pid, wid, 1, 1, group);
+  usleep(1000);
+  cuaSend(src, kCGEventLeftMouseUp,   off, -1, -1, pid, wid, 1, 2, group);
+  usleep(100000);                                  // a frame, so it is not run-on
+  cuaSend(src, kCGEventLeftMouseDown, at,  lx,  ly, pid, wid, 1, 3, group);
+  usleep(1000);
+  cuaSend(src, kCGEventLeftMouseUp,   at,  lx,  ly, pid, wid, 1, 3, group);
+  if (src) CFRelease(src);
+}
+
+// ── A drag through the same route ───────────────────────────────────────────
+// No reference recipe exists: the driver this sequence came from refuses
+// background drags outright. So this is the click sequence with the button
+// kept down across intermediate points, and a switch for the one thing that
+// made a drag carry its button on a Chromium surface earlier today — pressure.
+static void cuaDragSend(CGEventSourceRef src, CGEventType type, CGPoint at, double lx, double ly,
+                        pid_t pid, uint32_t wid, int64_t clickState, int64_t phase, int64_t group) {
+  CGEventRef e = CGEventCreateMouseEvent(src, type, at, kCGMouseButtonLeft);
+  if (!e) return;
+  cuaField(e, 0, phase);
+  cuaField(e, 1, clickState);
+  cuaField(e, 3, 0);
+  cuaField(e, 7, 3);
+  cuaField(e, 40, pid);
+  if (wid) { cuaField(e, 51, wid); cuaField(e, 91, wid); cuaField(e, 92, wid); }
+  cuaField(e, 58, group);
+  if (gPressure && (type == kCGEventLeftMouseDown || type == kCGEventLeftMouseDragged)) {
+    CGEventSetDoubleValueField(e, kCGMouseEventPressure, 1.0);
+    cuaField(e, 45, 1);
+  }
+  SetWinLocFn setWinLoc = (SetWinLocFn)S("CGEventSetWindowLocation");
+  if (setWinLoc) setWinLoc((void *)e, lx, ly);
+  cuaPost(e, pid);
+  CFRelease(e);
+}
+
+static void cuaDrag(pid_t pid, uint32_t wid, CGPoint a, double alx, double aly,
+                    CGPoint b, double blx, double bly) {
+  printf("  drag %s pressure\n", gPressure ? "WITH" : "without");
+  activateWithoutRaise(pid, wid);
+  usleep(50000);
+  CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  int64_t group = (int64_t)(CFAbsoluteTimeGetCurrent() * 1e6);
+  CGPoint off = CGPointMake(-1, -1);
+  cuaDragSend(src, kCGEventMouseMoved,    a,   alx, aly, pid, wid, 0, 2, group);
+  usleep(15000);
+  cuaDragSend(src, kCGEventLeftMouseDown, off, -1,  -1,  pid, wid, 1, 1, group);
+  usleep(1000);
+  cuaDragSend(src, kCGEventLeftMouseUp,   off, -1,  -1,  pid, wid, 1, 2, group);
+  usleep(100000);
+  cuaDragSend(src, kCGEventLeftMouseDown, a,   alx, aly, pid, wid, 1, 3, group);
+  usleep(16000);
+  for (int i = 1; i <= 8; i++) {
+    double t = (double)i / 9.0;
+    CGPoint pt = CGPointMake(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    cuaDragSend(src, kCGEventLeftMouseDragged, pt, alx + (blx - alx) * t, aly + (bly - aly) * t,
+                pid, wid, 1, 3, group);
+    usleep(16000);
+  }
+  cuaDragSend(src, kCGEventLeftMouseDragged, b, blx, bly, pid, wid, 1, 3, group);
+  usleep(16000);
+  cuaDragSend(src, kCGEventLeftMouseUp,      b, blx, bly, pid, wid, 1, 3, group);
+  if (src) CFRelease(src);
+}
