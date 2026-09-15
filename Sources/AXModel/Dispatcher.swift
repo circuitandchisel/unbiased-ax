@@ -637,7 +637,17 @@ public final class Dispatcher {
     // the end. The baseline is deliberately left alone, so that closing read
     // measures the whole sequence rather than only its last step.
     if (p["settle"] as? Bool) == false && watch == nil {
-      return ["ok": true, "settled": false]
+      var early: [String: Any] = ["ok": true, "settled": false]
+      // A step that does not settle has no diff, so it cannot reach the
+      // verdict below — which needs BOTH signals. It can still report the one
+      // it has. This matters more than the standalone case it was written for:
+      // measured on a form run, every single write went through a batch, so
+      // eleven writes produced no verdict at all while the check passed its
+      // tests against the path almost nothing uses.
+      if let w = wrote, w.before == w.after, w.wanted.map({ w.after != $0 }) ?? true {
+        early["valueUnchanged"] = true
+      }
+      return early
     }
     // Snapshot AFTER the app has had a chance to react, not the instant the
     // action returns. Measured: pressing return in Maps' search field produced

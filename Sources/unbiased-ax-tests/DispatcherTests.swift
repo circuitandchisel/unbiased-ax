@@ -800,6 +800,31 @@ func runRefindTests() {
     try expect(out.contains(#""wroteNothing":true"#), out)
   }
 
+  test("a non-settling step still reports that its write moved nothing") {
+    // The path this actually matters on. Measured on a form run: every write
+    // went through a batch, batch steps carry settle:false, and the verdict
+    // below the early return never ran — eleven writes, no signal, while the
+    // standalone path it was tested against is barely used.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new","settle":false}}"#)
+    try expect(out.contains(#""valueUnchanged":true"#), out)
+    try expect(out.contains(#""settled":false"#), out)
+    // The FACT, not the verdict. A step with no diff has only one of the two
+    // signals; whoever holds both decides.
+    try expect(!out.contains("wroteNothing"), "a one-signal step must not claim the verdict: \(out)")
+  }
+
+  test("a non-settling step whose write lands says nothing") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed","settle":false}}"#)
+    try expect(!out.contains("valueUnchanged"), out)
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
