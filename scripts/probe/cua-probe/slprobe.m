@@ -32,6 +32,7 @@ static int gTransport = 0;   // 0 both, 1 SLEventPostToPid only, 2 CGEventPostTo
 static BOOL gStampFields = YES;
 static BOOL gRestore = NO;
 static BOOL gCua = NO;
+static BOOL gSkipActivate = NO;
 static BOOL gPressure;
 
 
@@ -163,6 +164,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     else if (!strcmp(argv[i], "--restore")) gRestore = YES;
     else if (!strcmp(argv[i], "--cua")) gCua = YES;
     else if (!strcmp(argv[i], "--pressure")) gPressure = YES;
+    else if (!strcmp(argv[i], "--skip-activate")) gSkipActivate = YES;
     else if (!strcmp(argv[i], "--cua-drag")) {
       pid_t tp = atoi(argv[i+1]); uint32_t tw = (uint32_t)strtoul(argv[i+2], NULL, 10);
       CGPoint a = CGPointMake(atof(argv[i+3]), atof(argv[i+4]));
@@ -289,9 +291,8 @@ static void cuaSend(CGEventSourceRef src, CGEventType type, CGPoint at, double l
 }
 
 static void cuaClick(pid_t pid, uint32_t wid, CGPoint at, double lx, double ly) {
-  printf("  activate, then move, off-screen primer, target\n");
-  activateWithoutRaise(pid, wid);
-  usleep(50000);                                   // AppKit settles its routing
+  printf("  %s, move, off-screen primer, target\n", gSkipActivate ? "NO activate" : "activate");
+  if (!gSkipActivate) { activateWithoutRaise(pid, wid); usleep(50000); }                                   // AppKit settles its routing
   CGEventSourceRef src = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
   int64_t group = (int64_t)(CFAbsoluteTimeGetCurrent() * 1e6);   // one gesture
   CGPoint off = CGPointMake(-1, -1);

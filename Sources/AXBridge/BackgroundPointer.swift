@@ -93,7 +93,6 @@ enum BackgroundPointer {
   /// element of any window while still counting as a press.
   private static let offScreen = CGPoint(x: -1, y: -1)
 
-  private static let settleUs: UInt32 = 50_000    // let the app update its routing
   private static let afterMoveUs: UInt32 = 15_000
   private static let withinClickUs: UInt32 = 1_000
   private static let afterPrimerUs: UInt32 = 100_000  // a frame, so it is not run-on
@@ -116,6 +115,21 @@ enum BackgroundPointer {
     return ok ? out : nil
   }
 
+  /// NOT USED, and kept only so nobody adds it back.
+  ///
+  /// This makes the target internally active — which is exactly what takes the
+  /// key window away from whatever the user is typing in. Measured 2026-09-14
+  /// on a live run: the caret indicator went out of the user's editor and
+  /// select-all started reaching the wrong app, once per click, for the length
+  /// of a hundred-point trace.
+  ///
+  /// It was added on the belief that a click would not land without it. That
+  /// belief came from one test against a PANEL TAB, which failed both with and
+  /// without it — a broken test read as a signal. Measured properly afterwards,
+  /// four for four, on a layer row and on the canvas, with the app in the
+  /// background and the user's app in front the whole time: a click lands with
+  /// no activation at all.
+  ///
   /// Tell the app it is active without asking the window server to raise
   /// anything: one record saying the previous front has lost focus, one saying
   /// the target has gained it.
@@ -215,8 +229,6 @@ enum BackgroundPointer {
   /// within one gesture, and an app can honour the second and ignore a pair of
   /// firsts.
   static func click(pid: pid_t, windowId: CGWindowID, screen: CGPoint, local: CGPoint, clicks: Int = 1) {
-    activateWithoutRaise(pid: pid, windowId: windowId)
-    usleep(settleUs)
     let gesture = gestureId()
     send(.mouseMoved, screen: screen, local: local, pid: pid, windowId: windowId,
          clickState: 0, phase: phaseMoveOrPrimerUp, gesture: gesture)
@@ -237,8 +249,6 @@ enum BackgroundPointer {
   /// each step, in order.
   static func drag(pid: pid_t, windowId: CGWindowID, path: [(screen: CGPoint, local: CGPoint)]) {
     guard let first = path.first, let last = path.last, path.count > 1 else { return }
-    activateWithoutRaise(pid: pid, windowId: windowId)
-    usleep(settleUs)
     let gesture = gestureId()
     send(.mouseMoved, screen: first.screen, local: first.local, pid: pid, windowId: windowId,
          clickState: 0, phase: phaseMoveOrPrimerUp, gesture: gesture)
