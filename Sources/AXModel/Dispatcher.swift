@@ -235,6 +235,15 @@ public final class Dispatcher {
       let id = try resolveId(app, asked)
       let key = Self.actionKey("setValue", id: id, detail: value)
       try repeatCheck(app, key)
+      // Both sides read live, from the same source, at the moments either side
+      // of the write. Taking "before" from the snapshot already in memory
+      // would save one IPC and compare two different sources — a snapshot
+      // taken at the last read against an attribute read taken now — which
+      // disagree whenever the snapshot is stale, and then report a change that
+      // did not happen or miss one that did. The saving is not worth it: this
+      // action already pays a settle poll measured in seconds, and an
+      // attribute read is noise beside it.
+      let valueBefore = (try? backend.value(app: app, id: id)) ?? nil
       try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? false)
       // Read it back unless told not to. This throws BEFORE afterAction, so the
       // diff baseline is left where it was and the next read still shows what
@@ -246,7 +255,9 @@ public final class Dispatcher {
       // honest only where a write is actually observable — a `text field`,
       // which Figma does honour.
       if (p["verify"] as? Bool) == true { try verifyValue(app, id: id, wanted: value) }
-      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
+      let valueAfter = (try? backend.value(app: app, id: id)) ?? nil
+      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key,
+                             wrote: (valueBefore, valueAfter, value))
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keyAllowed(key) else {
@@ -316,8 +327,32 @@ public final class Dispatcher {
           throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: the characters would reach the app as shortcuts. Nothing was typed. Pass id to aim at a field, or click the field first and check that it took focus.")
         }
       }
+      // Read the target before and after, when there is one. Typing is a
+      // stream of key events and the stream can be lossy: measured, one call
+      // asking for 222 characters put 217 into the field and reported success,
+      // and the five that went missing were the end of a sentence. Nothing
+      // said so. A caller that cannot see the shortfall sends the next step
+      // against text it does not have.
+      let typeBefore = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
       try backend.typeText(app: app, text: text, focusId: typeFocus)
-      return try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!))
+      let typeAfter = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+      var out = try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!),
+                                wrote: typeFocus == nil ? nil : (typeBefore, typeAfter, nil))
+      // How much of it arrived, when that is knowable and short of what was
+      // asked. Silent on an exact landing: a caller does not need telling that
+      // what it sent is what is there.
+      if var dict = out as? [String: Any], let after = typeAfter {
+        let gained = after.count - (typeBefore?.count ?? 0)
+        if gained > 0 && gained < text.count {
+          dict["typedChars"] = gained
+          dict["askedChars"] = text.count
+          dict["diff"] = "Only \(gained) of the \(text.count) characters sent arrived in the target; the rest were dropped on the way. "
+            + "Check what the field holds before sending anything that depends on it.\n"
+            + ((dict["diff"] as? String) ?? "")
+          out = dict
+        }
+      }
+      return out
     case "raise":
       // Measured over six runs: a press does nothing because the window is
       // parked, and the caller raises to fix it. That cannot work. Raising
@@ -587,8 +622,13 @@ public final class Dispatcher {
   /// settle, but which the bridge watches anyway (a delete outside a field).
   /// The diff is that step's own before/after and the baseline is NOT moved.
   /// `nameRemoved`: name the removed nodes, for a step whose job is removing.
+  /// What a write was supposed to do, so the reply can say whether it did.
+  /// `wanted` nil means any change counts — typing appends, so "it equals what
+  /// I sent" is the wrong question for it.
+  typealias Wrote = (before: String?, after: String?, wanted: String?)
+
   private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false,
-                           watch: Snapshot? = nil, nameRemoved: Bool = false) throws -> Any {
+                           watch: Snapshot? = nil, nameRemoved: Bool = false, wrote: Wrote? = nil) throws -> Any {
     // `"settle": false` means the caller is mid-sequence and does not want a
     // diff for this step: do the action and return. Measured on a Figma icon
     // built out of inspector fields — 372 actions, 253 seconds of settle
@@ -680,7 +720,28 @@ public final class Dispatcher {
                       : "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n") + diff
     }
     store(app, opts, snap)
+    // A write that changed the value it was aimed at, or changed anything in
+    // the tree, did something. One that changed NEITHER did nothing, and until
+    // now said "ok" anyway — measured on a backgrounded web view, where a
+    // value write returned success, the field stayed empty, and the control
+    // that would have acted on it stayed disabled.
+    //
+    // Reported, never refused. Refusing was tried and measured wrong the same
+    // day: some controls ignore a value write and keep reporting the old value
+    // while the change lands elsewhere, so a refusal stopped work that had
+    // succeeded. Saying what happened costs a caller nothing and stops the one
+    // failure the caller cannot otherwise see.
+    var quiet = false
+    if let w = wrote, diff == "(no changes)", w.before == w.after, w.wanted.map({ w.after != $0 }) ?? true {
+      quiet = true
+      let reads = (w.after ?? "").isEmpty ? "is still empty" : "still reads what it did before"
+      diff = "This wrote nothing that can be observed: the target \(reads), and no part of the tree changed. "
+        + "The write was accepted by the accessibility API and had no effect — which happens when the control is not taking input, "
+        + "not because the value was wrong. Put the caret in the control first (press it, then select all, then type) rather than sending the same write again.\n"
+        + diff
+    }
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
+    if quiet { out["wroteNothing"] = true }
     if let refound {
       // Say it plainly: the caller's number is stale from here on, and the
       // reason its next read looks renumbered is this, not a phantom.

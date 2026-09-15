@@ -125,8 +125,17 @@ final class FakeBackend: Backend {
                           pointerReturned: !back, movedPointer: !back, backgrounded: back)
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
+  /// How many characters of each type call go missing. Real typing is a
+  /// stream of key events and the stream can drop some; a fake that always
+  /// delivers everything cannot express the failure it is meant to catch.
+  var typeDrops = 0
+  /// A target that takes no typed text at all — a backgrounded web view.
+  var typeLands = true
   func typeText(app: String, text: String, focusId: Int?) throws {
     typed.append((app, text, focusId))
+    guard typeLands, let id = focusId else { return }
+    let landed = String(text.prefix(max(0, text.count - typeDrops)))
+    storedValues[id] = (storedValues[id] ?? "") + landed
   }
   /// What the app "says" is under a pointer's first point. Honest by default.
   var pointerHitResult: HitRelation = .inside
@@ -741,6 +750,56 @@ func runRefindTests() {
     try expect(!out.contains("null"), "a row omits what it does not have: \(out)")
   }
 
+  test("a write that changes neither the value nor the tree says so") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned" // the control ignores the write and keeps its value
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new text"}}"#)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+    try expect(out.contains("wrote nothing that can be observed"), out)
+    // Reported, not refused: refusing was tried once and stopped work that had
+    // succeeded, so the call still reports ok and the caller decides.
+    try expect(out.contains(#""ok":true"#), "it reports rather than refuses: \(out)")
+  }
+
+  test("a write that lands says nothing extra") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed"}}"#)
+    try expect(!out.contains("wroteNothing"), "a working write is not commented on: \(out)")
+  }
+
+  test("typing that arrives short says how much of it arrived") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.typeDrops = 5 // the shortfall measured on a real composer
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"0123456789"}}"#)
+    try expect(out.contains(#""typedChars":5"#), out)
+    try expect(out.contains(#""askedChars":10"#), out)
+    try expect(out.contains("Only 5 of the 10 characters"), out)
+  }
+
+  test("typing that arrives whole says nothing extra") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"0123456789"}}"#)
+    try expect(!out.contains("typedChars"), "an exact landing is not worth a sentence: \(out)")
+    try expect(!out.contains("wroteNothing"), out)
+  }
+
+  test("typing into something that takes no input is not reported as done") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.typeLands = false // a backgrounded web view: accepted, ignored
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"hello"}}"#)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
@@ -1158,7 +1217,7 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     try expect(out.contains(#""ok":true"#), out)
-    try expectEqual(b.valueReads, [3], "exactly one read-back")
+    try expectEqual(b.valueReads, [3, 3, 3], "before, the verify read-back, and after — got \(b.valueReads)")
   }
 
   test("a field that ROUNDS the write is not a failure") {
@@ -1234,7 +1293,12 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
     try expect(out.contains(#""ok":true"#), "no opt-in, no refusal: \(out)")
-    try expect(b.valueReads.isEmpty, "and no read at all, got \(b.valueReads)")
+    // Two reads, not none — and they are not the verification this test is
+    // about. VALUE verification stays off by default because it refused
+    // writes that had worked. These two refuse nothing: they only let the
+    // reply say whether the write moved anything at all, which a write that
+    // silently does nothing otherwise hides behind "ok".
+    try expectEqual(b.valueReads, [3, 3], "the effect check, and no value verification — got \(b.valueReads)")
   }
 
   test("verify:false skips the read entirely") {
@@ -1244,7 +1308,7 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":false}}"#)
     try expect(out.contains(#""ok":true"#), "opting out is allowed: \(out)")
-    try expect(b.valueReads.isEmpty, "and costs nothing, got \(b.valueReads)")
+    try expectEqual(b.valueReads, [3, 3], "verify:false opts out of value verification; the effect check stays — got \(b.valueReads)")
   }
 }
 
