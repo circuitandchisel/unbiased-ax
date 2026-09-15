@@ -380,9 +380,12 @@ public final class LiveBackend: Backend {
     }
     let cursorHome = CGEvent(source: nil)?.location
     // Addressing the window is the best of the three when it is available: no
-    // raise, no Space switch, no pointer borrowed. Modifiers and multi-clicks
-    // are excluded for the same reason as below — this route carries neither.
-    let target = (Self.backgroundPointer && BackgroundPointer.available && f.isEmpty && clicks == 1)
+    // raise, no Space switch, no pointer borrowed. Modifiers still need the
+    // event route, which carries flags this one does not — but a double click
+    // does NOT: click state is a field on the event, so it rides along.
+    // Excluding it cost a borrowed cursor in the middle of someone's typing,
+    // measured 2026-09-14, for no reason at all.
+    let target = (Self.backgroundPointer && BackgroundPointer.available && f.isEmpty && clicks <= 2)
       ? Self.windowTarget(of: el) : nil
     // Modifiers and multi-clicks still need the event route, which carries
     // flags and a click state the quiet one cannot.
@@ -467,7 +470,7 @@ public final class LiveBackend: Backend {
         // event took 33s, 23s of which were the two intra-click gaps.
         if let target {
           BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
-                                  screen: step.point, local: Self.local(step.point, target.origin))
+                                  screen: step.point, local: Self.local(step.point, target.origin), clicks: clicks)
         } else if quiet {
           quietClick(step.point)
         } else {
@@ -477,6 +480,9 @@ public final class LiveBackend: Backend {
         }
         landed.append(step.point)
       }
+      // The path is finished; tell the window the pointer left, or it goes on
+      // drawing one where the last click landed.
+      if let target { BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id) }
       return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil,
                             movedPointer: movedPointer, backgrounded: target != nil)
     } else {

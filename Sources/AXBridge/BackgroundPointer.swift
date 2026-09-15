@@ -98,6 +98,7 @@ enum BackgroundPointer {
   private static let withinClickUs: UInt32 = 1_000
   private static let afterPrimerUs: UInt32 = 100_000  // a frame, so it is not run-on
   private static let dragStepUs: UInt32 = 16_000
+  private static let betweenPairsUs: UInt32 = 80_000  // a double click is two pairs, not two clicks
 
   /// The target's process serial number, by the window's owning connection when
   /// that resolves and by pid otherwise. Only a PSN addresses a process here.
@@ -192,8 +193,28 @@ enum BackgroundPointer {
     usleep(afterPrimerUs)
   }
 
-  /// One click, delivered to the window at `local` without raising it.
-  static func click(pid: pid_t, windowId: CGWindowID, screen: CGPoint, local: CGPoint) {
+  /// Tell the window the pointer has left. Without this the app goes on
+  /// drawing a cursor wherever the gesture finished — it has been told where
+  /// the pointer is and never told it moved away — which looks to the user
+  /// like a second, frozen cursor sitting in their document. Measured
+  /// 2026-09-14: one parked over the Effects row of a panel, at the exact
+  /// point of the last click, until the window was touched by hand.
+  ///
+  /// Once per PATH, never between its points: a trace is many clicks that the
+  /// app reads as one piece of drawing, and telling it the pointer left in the
+  /// middle would be a worse bug than the cursor this fixes.
+  static func park(pid: pid_t, windowId: CGWindowID) { park(pid: pid, windowId: windowId, gesture: gestureId()) }
+
+  private static func park(pid: pid_t, windowId: CGWindowID, gesture: Int64) {
+    send(.mouseMoved, screen: offScreen, local: offScreen, pid: pid, windowId: windowId,
+         clickState: 0, phase: phaseMoveOrPrimerUp, gesture: gesture)
+  }
+
+  /// One click, or a double click, delivered to the window at `local` without
+  /// raising it. A double click is not two clicks: the click STATE rises
+  /// within one gesture, and an app can honour the second and ignore a pair of
+  /// firsts.
+  static func click(pid: pid_t, windowId: CGWindowID, screen: CGPoint, local: CGPoint, clicks: Int = 1) {
     activateWithoutRaise(pid: pid, windowId: windowId)
     usleep(settleUs)
     let gesture = gestureId()
@@ -201,11 +222,14 @@ enum BackgroundPointer {
          clickState: 0, phase: phaseMoveOrPrimerUp, gesture: gesture)
     usleep(afterMoveUs)
     primer(pid: pid, windowId: windowId, gesture: gesture)
-    send(.leftMouseDown, screen: screen, local: local, pid: pid, windowId: windowId,
-         clickState: 1, phase: phaseTarget, gesture: gesture)
-    usleep(withinClickUs)
-    send(.leftMouseUp, screen: screen, local: local, pid: pid, windowId: windowId,
-         clickState: 1, phase: phaseTarget, gesture: gesture)
+    for pair in 1...max(1, min(clicks, 2)) {
+      if pair > 1 { usleep(betweenPairsUs) }
+      send(.leftMouseDown, screen: screen, local: local, pid: pid, windowId: windowId,
+           clickState: Int64(pair), phase: phaseTarget, gesture: gesture)
+      usleep(withinClickUs)
+      send(.leftMouseUp, screen: screen, local: local, pid: pid, windowId: windowId,
+           clickState: Int64(pair), phase: phaseTarget, gesture: gesture)
+    }
   }
 
   /// A held path: pressed at the first point, dragged through the rest,
@@ -230,5 +254,6 @@ enum BackgroundPointer {
     }
     send(.leftMouseUp, screen: last.screen, local: last.local, pid: pid, windowId: windowId,
          clickState: 1, phase: phaseTarget, gesture: gesture)
+    park(pid: pid, windowId: windowId, gesture: gesture)
   }
 }
