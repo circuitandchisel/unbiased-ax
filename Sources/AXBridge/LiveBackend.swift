@@ -487,18 +487,32 @@ public final class LiveBackend: Backend {
                             movedPointer: movedPointer, backgrounded: target != nil)
     } else {
       for pt in points {
-        post(.mouseMoved, pt)
         // A double click is not two clicks: the click STATE rises within one
         // gesture, and an app can honour the second and ignore a pair of
         // singles. Measured on Figma's position steppers, where one click did
         // not open the field for editing and a double click did.
+        //
+        // The window route carries that state as a field, so it takes this
+        // branch too. Allowing a double click to CHOOSE the route without
+        // teaching this branch to use it was a real bug and a bad one: the
+        // outcome said the pointer had not been touched, so it was never put
+        // back, while these posts moved it anyway. Measured 2026-09-14 — the
+        // cursor was taken mid-drawing and left where it landed.
+        if let target {
+          BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
+                                  screen: pt, local: Self.local(pt, target.origin), clicks: clicks)
+          continue
+        }
+        post(.mouseMoved, pt)
         for n in 1...max(1, clicks) {
           post(.leftMouseDown, pt, clickState: n)
           post(.leftMouseUp, pt, clickState: n)
         }
       }
+      if let target { BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id) }
     }
-    return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
+    return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil,
+                          movedPointer: movedPointer, backgrounded: target != nil)
   }
 
   /// Who was in front before a raise took it from them, if one did. Only a

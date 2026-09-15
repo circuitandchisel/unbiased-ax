@@ -90,6 +90,17 @@ func runPointerRaiseTests() {
     try expectEqual(b.pointerCalls.first?.hold, true, "and it was a held path")
   }
 
+  test("a double click is addressed at the window too — click state is a field, not a reason to fall back") {
+    let b = FakeBackend()
+    b.backgroundRoute = true
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":1,"clicks":2,"path":[{"x":0.5,"y":0.5}]}}"#)
+    try expect(out.contains(#""backgrounded":true"#), out)
+    try expectEqual(b.clickCounts.last, 2, "and it really was a double click: \(out)")
+    try expectEqual(b.raisedForPointer, 0, "nothing was raised for it")
+  }
+
   test("reads and presses still work in the background — only the pointer brings an app forward") {
     let b = FakeBackend()
     b.hideWindows = true
