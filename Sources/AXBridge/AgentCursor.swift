@@ -18,12 +18,18 @@ import Foundation
 /// click. Same binary, started with a flag, fed points on its stdin.
 public enum AgentCursor {
   static let flag = "--agent-cursor"
-  /// The glow's colour. Deliberately the product's own, so a mark on screen
-  /// reads as this app working rather than as an artefact of the OS.
-  static let accent = NSColor(srgbRed: 0xFF / 255.0, green: 0x77 / 255.0, blue: 0x64 / 255.0, alpha: 1)
-  /// Wide enough for the glow to fall off to nothing inside the window; the
-  /// arrow's tip sits at the middle.
+  /// The product's own colours, so a mark on screen reads as this app working
+  /// rather than as an artefact of the OS.
+  static let arrowColour = NSColor(srgbRed: 0xFF / 255.0, green: 0x77 / 255.0, blue: 0x64 / 255.0, alpha: 1)
+  static let glowColour = NSColor(srgbRed: 0xF8 / 255.0, green: 0x57 / 255.0, blue: 0x3B / 255.0, alpha: 1)
+  /// Wide enough for the glow to fall off to nothing inside the window.
   static let side: CGFloat = 132
+  /// The arrow is drawn CENTRED in the glow, because that is what reads as one
+  /// mark rather than an arrow with a halo hanging off it. But the tip is the
+  /// part that means something — it is the place being clicked — so the whole
+  /// window is shifted by this much to put the tip back on the point. Half the
+  /// arrow's extent, in both directions.
+  static let tipOffset: CGFloat = 8.75
   /// Idle time before it fades. Long enough to bridge the pause between the
   /// points of a traced path, short enough not to linger once a run is done.
   static let idleSeconds: TimeInterval = 1.4
@@ -137,7 +143,8 @@ final class OverlayWindow: NSPanel {
     let flipHeight = NSScreen.screens.first(where: { $0.frame.origin == .zero })?.frame.height
       ?? NSScreen.main?.frame.height ?? 0
     let half = AgentCursor.side / 2
-    setFrameOrigin(NSPoint(x: p.x - half, y: flipHeight - p.y - half))
+    let off = AgentCursor.tipOffset
+    setFrameOrigin(NSPoint(x: p.x - half + off, y: flipHeight - p.y - half - off))
     if alphaValue < 1 { alphaValue = 1 }
     orderFrontRegardless()
     idle?.invalidate()
@@ -167,41 +174,53 @@ final class CursorMark: NSView {
     guard let ctx = NSGraphicsContext.current?.cgContext else { return }
     let mid = CGPoint(x: bounds.midX, y: bounds.midY)
 
+
     // The glow. Two stops rather than one so the edge falls off to nothing
     // instead of ending on a visible circle.
-    let accent = AgentCursor.accent
-    let colours = [accent.withAlphaComponent(0.55).cgColor,
-                   accent.withAlphaComponent(0.22).cgColor,
-                   accent.withAlphaComponent(0).cgColor] as CFArray
+    let glow = AgentCursor.glowColour
+    let colours = [glow.withAlphaComponent(0.58).cgColor,
+                   glow.withAlphaComponent(0.24).cgColor,
+                   glow.withAlphaComponent(0).cgColor] as CFArray
     if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colours,
                                  locations: [0, 0.45, 1]) {
       ctx.drawRadialGradient(gradient, startCenter: mid, startRadius: 0,
-                             endCenter: mid, endRadius: AgentCursor.side / 2,
+                             endCenter: mid, endRadius: AgentCursor.side * 0.42,
                              options: [])
     }
 
-    // The arrow, in the usual pointer shape, its tip at the centre. Drawn in a
-    // 20x20 box with y downwards, then turned over for AppKit.
+    // The arrow: an arrowhead with a concave back, drawn as an outline so the
+    // glow shows through it rather than being covered up. Not the system
+    // pointer silhouette — this should read as something an agent is doing,
+    // not as the user's own cursor sitting somewhere unexpected.
+    //
+    // A 22pt shape in a box with y downwards, tip at the origin, then turned
+    // over for AppKit. Tip, right wing, a notch pulled back toward the tip,
+    // bottom wing, close.
     let arrow = NSBezierPath()
     let pts: [CGPoint] = [
-      CGPoint(x: 0, y: 0), CGPoint(x: 0, y: 16.5), CGPoint(x: 4.3, y: 12.6),
-      CGPoint(x: 7.1, y: 19), CGPoint(x: 9.8, y: 17.8), CGPoint(x: 7.1, y: 11.6),
-      CGPoint(x: 12.4, y: 11.6),
+      CGPoint(x: 0, y: 0),        // the tip, which is what sits on the point
+      CGPoint(x: 17.5, y: 7),     // right wing
+      CGPoint(x: 8, y: 8),        // the notch, back toward the tip
+      CGPoint(x: 7, y: 17.5),     // bottom wing
     ]
     arrow.move(to: NSPoint(x: pts[0].x, y: -pts[0].y))
     for p in pts.dropFirst() { arrow.line(to: NSPoint(x: p.x, y: -p.y)) }
     arrow.close()
     arrow.lineJoinStyle = .round
-    arrow.lineWidth = 1.6
+    arrow.lineCapStyle = .round
 
     ctx.saveGState()
-    ctx.translateBy(x: mid.x, y: mid.y)
-    // A dark edge under the light fill, so the arrow reads on a pale window as
-    // well as a dark one.
-    NSColor.black.withAlphaComponent(0.55).setStroke()
+    // Centred: the arrow's own middle sits on the glow's middle. The window
+    // placement puts the tip back on the click point.
+    ctx.translateBy(x: mid.x - AgentCursor.tipOffset, y: mid.y + AgentCursor.tipOffset)
+    // Light over dark: a white outline alone vanishes on a pale panel, a dark
+    // one vanishes on a dark canvas. Drawn twice, it reads on both.
+    arrow.lineWidth = 4.4
+    NSColor.black.withAlphaComponent(0.38).setStroke()
     arrow.stroke()
-    NSColor.white.withAlphaComponent(0.95).setFill()
-    arrow.fill()
+    arrow.lineWidth = 2.1
+    AgentCursor.arrowColour.setStroke()
+    arrow.stroke()
     ctx.restoreGState()
   }
 }
