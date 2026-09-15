@@ -650,6 +650,28 @@ public final class LiveBackend: Backend {
     }
   }
 
+  /// A menu command's key equivalent, in the form `pressKey` understands, or
+  /// nil when it has none this bridge can send.
+  ///
+  /// Worth having because a shortcut posted to the pid reaches an app wherever
+  /// it is, while pressing the menu item itself needs the app in front. At
+  /// least one modifier is required: a bare letter posted at a background app
+  /// is indistinguishable from typing into whatever it has focused.
+  static func shortcutKey(of item: AXElement) -> (key: String, modifiers: [String])? {
+    guard let ch = Self.menuString(item, "AXMenuItemCmdChar"), ch.count == 1 else { return nil }
+    var modsRef: CFTypeRef?
+    let mods = (AXUIElementCopyAttributeValue(item.ref, "AXMenuItemCmdModifiers" as CFString, &modsRef) == .success ? modsRef as? Int : nil) ?? 0
+    var m: [String] = []
+    if mods & 8 == 0 { m.append("command") }   // bit 3 set means NO command key
+    if mods & 1 != 0 { m.append("shift") }
+    if mods & 2 != 0 { m.append("option") }
+    if mods & 4 != 0 { m.append("control") }
+    guard !m.isEmpty else { return nil }
+    let key = ch.lowercased()
+    guard Self.keyCodes[key] != nil || Self.letterCodes[key] != nil else { return nil }
+    return (key, m)
+  }
+
   private static func entry(_ item: AXElement, _ path: [String]) -> MenuEntry {
     var shortcut: String? = nil
     if let ch = Self.menuString(item, "AXMenuItemCmdChar"), !ch.isEmpty {
@@ -684,10 +706,25 @@ public final class LiveBackend: Backend {
       guard let next = named(cur) else { throw BridgeError.actionFailed("no menu item \"\(title)\" under \(path.joined(separator: " > "))") }
       cur = next
     }
+    // A command with a key equivalent does not need the app in front at all:
+    // the shortcut posted to the pid reaches it wherever it is. Measured
+    // 2026-09-14 on Figma from another Space with a different app frontmost —
+    // command-backslash hid its interface and showed it again, 282 elements to
+    // 48 and back, and the frontmost app never changed. This is the difference
+    // between a drawing run that interrupts the user twice a minute and one
+    // they can ignore.
+    var enabledRef: CFTypeRef?
+    let enabled = (AXUIElementCopyAttributeValue(cur.ref, kAXEnabledAttribute as CFString, &enabledRef) == .success
+                   ? enabledRef as? Bool : nil) ?? true
+    if enabled, let sc = Self.shortcutKey(of: cur) {
+      try pressKey(app: app, key: sc.key, modifiers: sc.modifiers, focusId: nil)
+      return
+    }
     try keepingFront(keepFront) {
-      // Measured 2026-09-09: pressing a closed item while another app is
-      // frontmost returns success and changes nothing — an Electron menu
-      // action goes to the focused window, and there is none. Active, it works.
+      // No key equivalent, so the item itself has to be pressed — and measured
+      // 2026-09-09: pressing a closed item while another app is frontmost
+      // returns success and changes nothing — an Electron menu action goes to
+      // the focused window, and there is none. Active, it works.
       if !a.isActive {
         a.activate(options: [])
         usleep(350_000)
