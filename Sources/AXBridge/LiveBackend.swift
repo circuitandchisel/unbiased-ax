@@ -420,8 +420,10 @@ public final class LiveBackend: Backend {
     }
     if hold, points.count > 1 {
       if let target {
+        for pt in points { AgentCursor.show(at: pt) }
         BackgroundPointer.drag(pid: a.processIdentifier, windowId: target.id,
                                path: points.map { (screen: $0, local: Self.local($0, target.origin)) })
+        AgentCursor.done()
         return PointerOutcome(landed: points, pointerReturned: false, movedPointer: false, backgrounded: true)
       }
       // Otherwise the event route. The quiet one can put a click where the
@@ -469,6 +471,7 @@ public final class LiveBackend: Backend {
         // Measured 2026-09-10: a 112-point trace paced at 70ms after every
         // event took 33s, 23s of which were the two intra-click gaps.
         if let target {
+          AgentCursor.show(at: step.point)
           BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
                                   screen: step.point, local: Self.local(step.point, target.origin), clicks: clicks)
         } else if quiet {
@@ -482,7 +485,10 @@ public final class LiveBackend: Backend {
       }
       // The path is finished; tell the window the pointer left, or it goes on
       // drawing one where the last click landed.
-      if let target { BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id) }
+      if let target {
+        BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id)
+        AgentCursor.done()
+      }
       return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil,
                             movedPointer: movedPointer, backgrounded: target != nil)
     } else {
@@ -499,6 +505,7 @@ public final class LiveBackend: Backend {
         // back, while these posts moved it anyway. Measured 2026-09-14 — the
         // cursor was taken mid-drawing and left where it landed.
         if let target {
+          AgentCursor.show(at: pt)
           BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
                                   screen: pt, local: Self.local(pt, target.origin), clicks: clicks)
           continue
@@ -509,7 +516,10 @@ public final class LiveBackend: Backend {
           post(.leftMouseUp, pt, clickState: n)
         }
       }
-      if let target { BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id) }
+      if let target {
+        BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id)
+        AgentCursor.done()
+      }
     }
     return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil,
                           movedPointer: movedPointer, backgrounded: target != nil)

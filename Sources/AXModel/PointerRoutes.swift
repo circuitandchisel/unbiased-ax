@@ -22,6 +22,16 @@ public enum BackgroundPointerRoute {
   }
 }
 
+/// The drawn pointer that shows where the agent is working. On by default: a
+/// click that moves nothing is invisible, and a window changing for no visible
+/// reason is worse than a mark on screen. Only ever drawn for the window route,
+/// where there is no real cursor to watch.
+public enum AgentCursorSwitch {
+  public static func enabled(_ env: [String: String]) -> Bool {
+    Switch.on(env["UNBIASED_AX_AGENT_CURSOR"], default: true)
+  }
+}
+
 enum Switch {
   static func on(_ raw: String?, default fallback: Bool) -> Bool {
     guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else { return fallback }
