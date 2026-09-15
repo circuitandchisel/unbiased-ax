@@ -115,20 +115,26 @@ enum BackgroundPointer {
     return ok ? out : nil
   }
 
-  /// NOT USED, and kept only so nobody adds it back.
+  /// Called ONCE for a gesture, and never per click.
   ///
-  /// This makes the target internally active — which is exactly what takes the
-  /// key window away from whatever the user is typing in. Measured 2026-09-14
-  /// on a live run: the caret indicator went out of the user's editor and
-  /// select-all started reaching the wrong app, once per click, for the length
-  /// of a hundred-point trace.
+  /// The app has to be told it is active before it will take a click aimed at
+  /// it — but only once. After that it stays receptive, and every later click
+  /// lands with nothing further. Measured 2026-09-15 on a freshly launched
+  /// app: a background click did nothing, one activation, the same click
+  /// landed, and the user's app stayed in front throughout.
   ///
-  /// It was added on the belief that a click would not land without it. That
-  /// belief came from one test against a PANEL TAB, which failed both with and
-  /// without it — a broken test read as a signal. Measured properly afterwards,
-  /// four for four, on a layer row and on the canvas, with the app in the
-  /// background and the user's app in front the whole time: a click lands with
-  /// no activation at all.
+  /// The cost is real and is why this is not called per click. Activating
+  /// takes the key window from whatever the user is typing in — once per click
+  /// across a hundred-point trace, that was their caret leaving their editor
+  /// and select-all reaching the wrong app for half a minute. Once per gesture
+  /// it is a single blip they will most likely not notice.
+  ///
+  /// This was removed entirely on 09-14, on a measurement that looked clean
+  /// and was not: the test app had been activated by the probe minutes
+  /// earlier, so "four for four with no activation" was measuring the residue
+  /// of an earlier test rather than the thing it claimed to. A freshly
+  /// launched app takes nothing without it. If a measurement here says a step
+  /// is unnecessary, do it again on an app that has just started.
   ///
   /// Tell the app it is active without asking the window server to raise
   /// anything: one record saying the previous front has lost focus, one saying
@@ -222,6 +228,13 @@ enum BackgroundPointer {
   private static func park(pid: pid_t, windowId: CGWindowID, gesture: Int64) {
     send(.mouseMoved, screen: offScreen, local: offScreen, pid: pid, windowId: windowId,
          clickState: 0, phase: phaseMoveOrPrimerUp, gesture: gesture)
+  }
+
+  /// Make the app receptive, once, before a gesture. See activateWithoutRaise
+  /// for why this is once and not per click.
+  static func beginGesture(pid: pid_t, windowId: CGWindowID) {
+    activateWithoutRaise(pid: pid, windowId: windowId)
+    usleep(50_000)   // let the app update its routing before events arrive
   }
 
   /// One click, or a double click, delivered to the window at `local` without

@@ -418,6 +418,7 @@ public final class LiveBackend: Backend {
       ev.post(tap: .cghidEventTap)
       usleep(gap)
     }
+    if let target { BackgroundPointer.beginGesture(pid: a.processIdentifier, windowId: target.id) }
     if hold, points.count > 1 {
       if let target {
         for pt in points { AgentCursor.show(at: pt) }
