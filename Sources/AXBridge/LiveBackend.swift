@@ -418,7 +418,11 @@ public final class LiveBackend: Backend {
       ev.post(tap: .cghidEventTap)
       usleep(gap)
     }
-    if let target { BackgroundPointer.beginGesture(pid: a.processIdentifier, windowId: target.id) }
+    if let target {
+      BackgroundPointer.beginGesture(pid: a.processIdentifier, windowId: target.id)
+    }
+    // Whatever happens to the path, the user gets their key window back.
+    defer { if let target { BackgroundPointer.endGesture(pid: a.processIdentifier, windowId: target.id) } }
     if hold, points.count > 1 {
       if let target {
         for pt in points { AgentCursor.show(at: pt) }

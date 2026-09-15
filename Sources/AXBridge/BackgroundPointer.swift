@@ -155,6 +155,21 @@ enum BackgroundPointer {
     // A 248-byte event record: a size at 0x04, a kind at 0x08, the window id
     // little-endian at 0x3C, and 0x8A saying whether this is a loss of focus
     // (2) or a gain (1). Everything else stays zero.
+    let ok = handFocus(from: previous, to: target, windowId: windowId)
+    if ok { focusTakenFrom = previous }
+    return ok
+  }
+
+  /// Whoever was holding the key window when a gesture took it, so it can be
+  /// given back. Without this the user's caret stays gone: their editor lost
+  /// focus and nothing ever told it otherwise, so it waits, and their next
+  /// click is spent getting it back rather than doing what they meant.
+  private static var focusTakenFrom: [UInt8]?
+
+  /// One record saying a process has lost focus, one saying another has gained
+  /// it. The same pair, either direction.
+  private static func handFocus(from: [UInt8], to: [UInt8], windowId: CGWindowID) -> Bool {
+    guard let postRecord else { return false }
     var record = [UInt8](repeating: 0, count: 0xF8)
     record[0x04] = 0xF8
     record[0x08] = 0x0D
@@ -162,16 +177,27 @@ enum BackgroundPointer {
     record[0x3D] = UInt8((windowId >> 8) & 0xFF)
     record[0x3E] = UInt8((windowId >> 16) & 0xFF)
     record[0x3F] = UInt8((windowId >> 24) & 0xFF)
-
     func post(_ to: [UInt8], kind: UInt8) -> Bool {
       record[0x8A] = kind
       return to.withUnsafeBytes { psnRaw in
         record.withUnsafeBufferPointer { rec in postRecord(psnRaw.baseAddress!, rec.baseAddress!) == 0 }
       }
     }
-    let defocused = post(previous, kind: 0x02)
-    let focused = post(target, kind: 0x01)
+    let defocused = post(from, kind: 0x02)
+    let focused = post(to, kind: 0x01)
     return defocused && focused
+  }
+
+  /// Give the key window back to whoever had it before the gesture.
+  ///
+  /// Taking it is unavoidable — an app will not accept a click aimed at it
+  /// until it believes it is active. Keeping it is not: measured 2026-09-15,
+  /// a run left the user with no caret in their editor and a first click that
+  /// only restored focus instead of doing what they asked.
+  static func endGesture(pid: pid_t, windowId: CGWindowID) {
+    guard let mine = psn(pid: pid, windowId: windowId), let theirs = focusTakenFrom else { return }
+    _ = handFocus(from: mine, to: theirs, windowId: windowId)
+    focusTakenFrom = nil
   }
 
   /// One event of a gesture, addressed at a window rather than at the screen.
