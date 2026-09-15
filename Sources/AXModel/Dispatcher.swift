@@ -66,6 +66,13 @@ public final class Dispatcher {
   /// between consecutive reads, each forcing the app to ask for the whole
   /// tree (~9KB), and the two compactions that followed cost nine minutes.
   private var baselines: [String: [String: Snapshot]] = [:]
+  /// How many snapshots of this app have been stored. Provenance for an id:
+  /// which read it came from. NOT a validity gate — an id from generation 3
+  /// used at generation 9 is fine if it still names the same control, and
+  /// resolveId is what decides that. The number exists so a caller can tell
+  /// how stale its handle MIGHT be, and so a code-mode kernel can notice that
+  /// the ground moved under a variable it has been holding.
+  private var generations: [String: Int] = [:]
   /// The most recent snapshot of each app under any filter: what a stale id
   /// is re-found against, and where an element's action list is looked up.
   private var latest: [String: Snapshot] = [:]
@@ -132,7 +139,14 @@ public final class Dispatcher {
       let snap = try backend.snapshot(app: app, options: opts)
       defer { store(app, opts, snap) }
       var out: [String: Any] = ["count": snap.nodes.count, "truncated": snap.truncated]
-      if let prev = baseline(app, opts), !((p["full"] as? Bool) ?? false) {
+      let gen = (generations[app] ?? 0) + 1 // this read is the one being stored
+      out["generation"] = gen
+      if (p["structured"] as? Bool) == true {
+        // Data instead of the lines, never as well as them. A caller asking
+        // for this is a script, and a script does not read prose; sending
+        // both would bill the tree twice for one read.
+        out["elements"] = snap.nodes.map { Formatter.row($0, generation: gen, geometry: geometry) }
+      } else if let prev = baseline(app, opts), !((p["full"] as? Bool) ?? false) {
         out["diff"] = Differ.render(from: prev, to: snap, geometry: geometry)
       } else {
         out["tree"] = Formatter.render(snap, geometry: geometry)
@@ -155,7 +169,13 @@ public final class Dispatcher {
         (role == nil || n.attributes.role == role!) &&
         (needle == nil || (n.attributes.title ?? "").lowercased().contains(needle!) || (n.attributes.value ?? "").lowercased().contains(needle!))
       }
-      var out: [String: Any] = ["matches": hits.map { Formatter.line($0, geometry: geometry) }, "count": hits.count]
+      let gen = generations[app] ?? 0 // find stored its snapshot above
+      var out: [String: Any] = ["count": hits.count, "generation": gen]
+      if (p["structured"] as? Bool) == true {
+        out["elements"] = hits.map { Formatter.row($0, generation: gen, geometry: geometry) }
+      } else {
+        out["matches"] = hits.map { Formatter.line($0, geometry: geometry) }
+      }
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
     case "menus":
@@ -863,6 +883,7 @@ public final class Dispatcher {
     perApp[Self.filterKey(o)] = snap
     baselines[app] = perApp
     latest[app] = snap
+    generations[app] = (generations[app] ?? 0) + 1
     remember(app, snap)
   }
   /// Every snapshot this app currently has a baseline for, one per filter.

@@ -700,6 +700,47 @@ func runRefindTests() {
     try expect(!out.contains("a.com"), "the field's contents must not reach the error: \(out)")
   }
 
+  test("structured rows are data, and are never sent alongside the lines") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","structured":true}}"#)
+    try expect(out.contains(#""elements""#), out)
+    // The whole point of opting in: a script reads the rows, a model reads the
+    // lines, and billing a model for both is what this avoids.
+    try expect(!out.contains(#""tree""#), "the text must not ride along: \(out)")
+    try expect(out.contains(#""role""#) && out.contains(#""actions""#), out)
+    try expect(out.contains(#""generation""#), "a row must say which read it came from: \(out)")
+  }
+
+  test("a plain read is unchanged, and still carries its generation") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""tree""#), "the default path still returns lines: \(out)")
+    try expect(!out.contains(#""elements""#), "and no rows unless asked: \(out)")
+    try expect(out.contains(#""generation":1"#), "the first read of an app is generation 1: \(out)")
+  }
+
+  test("the generation advances with each stored read, so a handle's age is knowable") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let second = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    try expect(second.contains(#""generation":2"#), second)
+    // Provenance, not a gate: the id from generation 1 still works at 2,
+    // because it still names the same control. resolveId decides that, not
+    // the number.
+    let acted = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(acted.contains(#""ok":true"#), "an older generation's id is not invalid: \(acted)")
+  }
+
+  test("an absent label is absent, not null") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","structured":true}}"#)
+    try expect(!out.contains("null"), "a row omits what it does not have: \(out)")
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
