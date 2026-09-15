@@ -752,8 +752,22 @@ public final class Dispatcher {
     if snapshots(app).contains(where: { $0.nodes.contains { $0.id == id } }) { return id }
     guard let want = idMemory[app]?[id], Self.identifiable(want) else { throw BridgeError.noSuchElement(id) }
     let matches = snap.nodes.filter { Self.sameControl($0.attributes, want) }
-    guard matches.count == 1 else { throw BridgeError.noSuchElement(id) }
+    // These two used to be one error, and they are not one problem. "Gone" is
+    // repaired by reading again. "Several now match" is not — reading again
+    // produces the same several, and the caller has to say which it meant. A
+    // caller told the wrong one of these retries the thing that cannot work.
+    if matches.isEmpty { throw BridgeError.elementGone(id, Self.describe(want)) }
+    guard matches.count == 1 else { throw BridgeError.ambiguousElement(id, Self.describe(want), matches.count) }
     return matches[0].id
+  }
+
+  /// What an id used to name, for an error a caller can act on. Role and title
+  /// only: a value is the part most likely to have changed, and quoting a
+  /// field's old contents back is both unhelpful and a way to leak what was
+  /// typed into an error string.
+  static func describe(_ a: Attributes) -> String {
+    let title = (a.title ?? "").isEmpty ? nil : "\"\(a.title!)\""
+    return [a.role, title].compactMap { $0 }.joined(separator: " ")
   }
 
   /// Only a control with something to match on can be re-found. A bare

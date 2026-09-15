@@ -666,8 +666,38 @@ func runRefindTests() {
     b.twoOKs = true
     _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
     let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
-    try expect(out.contains("no_such_element"), "ambiguity must refuse rather than pick: \(out)")
+    try expect(out.contains("ambiguous_element"), "ambiguity must refuse rather than pick: \(out)")
+    try expect(!out.contains("no_such_element"), "an ambiguous id is not a missing one: \(out)")
+    // The repair differs from a stale id's, so the message has to say so —
+    // a caller told "read again" retries the one thing that cannot help.
+    try expect(out.contains("2 controls now match"), "it must say how many matched: \(out)")
+    try expect(out.contains("NOT resolve this"), "it must say reading again will not fix it: \(out)")
     try expectEqual(b.acted.count, 0)
+  }
+
+  test("an element that is simply gone says so, and says reading again may fix it") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.shrunkUntilSnapshot = 5 // the OK button leaves the tree entirely
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(out.contains("element_gone"), "a vanished control is not an ambiguous one: \(out)")
+    try expect(out.contains("Read the app again"), out)
+    try expectEqual(b.acted.count, 0)
+  }
+
+  test("an error never quotes what was typed into the control") {
+    // describe() uses role and title only. A value is the part most likely to
+    // have changed, and it is where a password or an address would be.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let url = 3 // the fake's address field, value "a.com"
+    b.shrunkUntilSnapshot = 5
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(url),"action":"press"}}"#)
+    try expect(!out.contains("a.com"), "the field's contents must not reach the error: \(out)")
   }
 
   test("an id that was never handed out is refused as before") {

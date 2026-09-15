@@ -41,6 +41,15 @@ public enum BridgeError: Error {
   case notTrusted
   case noSuchApp(String)
   case noSuchElement(Int)
+  /// The id was issued once, the control it named is gone, and nothing in the
+  /// latest snapshot looks like it any more.
+  case elementGone(Int, String)
+  /// The id was issued once, the control it named is gone, and SEVERAL things
+  /// now match its description. Refusing is the point — picking one would act
+  /// on something the caller never saw. Kept apart from noSuchElement because
+  /// the repair is different: "read again" fixes a stale id, and does nothing
+  /// for an ambiguous one, where the caller has to say which it meant.
+  case ambiguousElement(Int, String, Int)
   case noSuchWindow(Int)
   case actionFailed(String)
   case timeout(String)
@@ -53,6 +62,8 @@ public enum BridgeError: Error {
     case .notTrusted: return "not_trusted"
     case .noSuchApp: return "no_such_app"
     case .noSuchElement: return "no_such_element"
+    case .elementGone: return "element_gone"
+    case .ambiguousElement: return "ambiguous_element"
     case .noSuchWindow: return "no_such_window"
     case .actionFailed: return "action_failed"
     case .timeout: return "timeout"
@@ -68,6 +79,10 @@ public enum BridgeError: Error {
       return "This process has not been granted Accessibility access. System Settings > Privacy & Security > Accessibility: enable it, then restart."
     case .noSuchApp(let a): return "No running app matches \"\(a)\". Call apps to list them."
     case .noSuchElement(let id): return "No element \(id) in the last snapshot of this app. Call tree again."
+    case .elementGone(let id, let was):
+      return "Element \(id) was \(was). It is gone from this app's latest snapshot and nothing there matches it any more. Read the app again: if the control is still on screen it has a new id."
+    case .ambiguousElement(let id, let was, let n):
+      return "Element \(id) was \(was). \(n) controls now match that description, so nothing was done rather than guess which one was meant. Read the app again and name the one you want — reading again will NOT resolve this on its own."
     case .noSuchWindow(let id): return "No window \(id). Call windows."
     case .actionFailed(let m): return m
     case .timeout(let m): return "The app did not respond: \(m)"
