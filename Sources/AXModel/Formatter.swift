@@ -48,7 +48,7 @@ public enum Formatter {
     let a = n.attributes
     var parts = ["\(n.id) " + String(repeating: "  ", count: n.depth) + a.role]
     if let t = a.title, !t.isEmpty { parts.append("\"\(clip(t))\"") }
-    if let v = a.value, !v.isEmpty { parts.append("= \(clip(v))") }
+    if let v = a.value, !v.isEmpty { parts.append("= \(clipValue(v, id: n.id))") }
     if a.focused { parts.append("[focused]") }
     if a.selected { parts.append("[selected]") }
     if !a.enabled && Role.isInteractive(a.role) { parts.append("[disabled]") }
@@ -69,5 +69,22 @@ public enum Formatter {
     // Pure Swift on purpose: AXModel imports no frameworks, Foundation included.
     let flat = String(s.map { $0 == "\n" ? " " : $0 })
     return flat.count > valueClip ? String(flat.prefix(valueClip)) + "…" : flat
+  }
+
+  /// A clipped VALUE says it was clipped, how much is missing, and where the
+  /// rest is.
+  ///
+  /// The bare "…" was read as "this is all there is". Measured on a form whose
+  /// result block ran to 250 characters: the caller quoted the first 120 and
+  /// reported that the tool had not exposed the remainder — which was
+  /// reachable the whole time, because `values` returns the value whole and
+  /// the read-back after a batch never clips at all. The cap stays: a tree
+  /// where one node dumps a paragraph is both unreadable and, at the token
+  /// prices measured this week, expensive. Only the silence goes.
+  static func clipValue(_ s: String, id: Int) -> String {
+    let flat = String(s.map { $0 == "\n" ? " " : $0 })
+    guard flat.count > valueClip else { return flat }
+    let rest = flat.count - valueClip
+    return String(flat.prefix(valueClip)) + "… (+\(rest) more; whole value: values ids=[\(id)])"
   }
 }

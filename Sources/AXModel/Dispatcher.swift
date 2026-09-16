@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -255,9 +255,28 @@ public final class Dispatcher {
       // honest only where a write is actually observable — a `text field`,
       // which Figma does honour.
       if (p["verify"] as? Bool) == true { try verifyValue(app, id: id, wanted: value) }
-      let valueAfter = (try? backend.value(app: app, id: id)) ?? nil
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key,
-                             wrote: (valueBefore, valueAfter, value))
+                             wrote: (valueBefore, id, value))
+    case "selectText":
+      // Select inside a named element, so the type that follows REPLACES
+      // rather than appends. The alternative in use until now was command+a,
+      // which is scoped to focus rather than to the element: when focus was
+      // not where the caller believed, it selected the document. This cannot,
+      // because the element is named.
+      //
+      // No settle and no diff: selecting changes nothing an app reports, so
+      // waiting for a reaction would buy a guaranteed "(no changes)" and the
+      // seconds it takes to conclude that.
+      let selAsked = try int(p, "id")
+      let selId = try resolveId(app, selAsked)
+      let wanted = p["text"] as? String
+      let selected = try backend.selectText(app: app, id: selId, text: wanted)
+      var out: [String: Any] = ["ok": true, "selected": selected]
+      if selAsked != selId { out["refoundId"] = selId }
+      out["note"] = selected == 0
+        ? "Nothing was selected: the control is empty, so there is nothing to replace — type into it directly."
+        : "\(selected) character(s) are selected in element \(selId). Typing now REPLACES them; there is no need to clear the field first."
+      return out
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keyAllowed(key) else {
@@ -335,9 +354,9 @@ public final class Dispatcher {
       // against text it does not have.
       let typeBefore = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
       try backend.typeText(app: app, text: text, focusId: typeFocus)
-      let typeAfter = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
       var out = try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!),
-                                wrote: typeFocus == nil ? nil : (typeBefore, typeAfter, nil))
+                                wrote: typeFocus == nil ? nil : (typeBefore, typeFocus, nil))
+      let typeAfter = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
       // How much of it arrived, when that is knowable and short of what was
       // asked. Silent on an exact landing: a caller does not need telling that
       // what it sent is what is there.
@@ -625,7 +644,7 @@ public final class Dispatcher {
   /// What a write was supposed to do, so the reply can say whether it did.
   /// `wanted` nil means any change counts — typing appends, so "it equals what
   /// I sent" is the wrong question for it.
-  typealias Wrote = (before: String?, after: String?, wanted: String?)
+  typealias Wrote = (before: String?, id: Int?, wanted: String?)
 
   private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false,
                            watch: Snapshot? = nil, nameRemoved: Bool = false, wrote: Wrote? = nil) throws -> Any {
@@ -644,7 +663,11 @@ public final class Dispatcher {
       // measured on a form run, every single write went through a batch, so
       // eleven writes produced no verdict at all while the check passed its
       // tests against the path almost nothing uses.
-      if let w = wrote, w.before == w.after, w.wanted.map({ w.after != $0 }) ?? true {
+      // No settle here, so no chance to let a stale value catch up: this is
+      // the one signal a non-settling step has, and it is reported as a fact
+      // for the batch's closing diff to judge, never as a verdict on its own.
+      let now = wrote?.id.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+      if let w = wrote, w.before == now, w.wanted.map({ now != $0 }) ?? true {
         early["valueUnchanged"] = true
       }
       return early
@@ -741,13 +764,20 @@ public final class Dispatcher {
     // while the change lands elsewhere, so a refusal stopped work that had
     // succeeded. Saying what happened costs a caller nothing and stops the one
     // failure the caller cannot otherwise see.
+    // The "after" is read HERE, once the settle poll has finished, not the
+    // instant the write returned. Measured on a Chromium text area: a value
+    // overwritten while it already held text read back as the PREVIOUS value
+    // for hundreds of milliseconds, so an immediate read compares stale
+    // against stale, finds them equal, and calls a write that landed quiet.
+    // Whatever patience the diff needed, the value needed too.
     var quiet = false
-    if let w = wrote, diff == "(no changes)", w.before == w.after, w.wanted.map({ w.after != $0 }) ?? true {
+    let after = wrote?.id.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+    if let w = wrote, diff == "(no changes)", w.before == after, w.wanted.map({ after != $0 }) ?? true {
       quiet = true
-      let reads = (w.after ?? "").isEmpty ? "is still empty" : "still reads what it did before"
+      let reads = (after ?? "").isEmpty ? "is still empty" : "still reads what it did before"
       diff = "This wrote nothing that can be observed: the target \(reads), and no part of the tree changed. "
         + "The write was accepted by the accessibility API and had no effect — which happens when the control is not taking input, "
-        + "not because the value was wrong. Put the caret in the control first (press it, then select all, then type) rather than sending the same write again.\n"
+        + "not because the value was wrong. Press the control, then selectText on it, then type — sending the same write again does the same nothing.\n"
         + diff
     }
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]

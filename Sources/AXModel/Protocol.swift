@@ -263,6 +263,19 @@ public protocol Backend: AnyObject {
   /// turned a `180` into `120180`, and seventeen later actions were computed
   /// on top of the wrong number. nil when the element exposes no value.
   func value(app: String, id: Int) throws -> String?
+  /// Select text INSIDE one element, so the typing that follows replaces it.
+  ///
+  /// `text` nil selects the whole value. This exists because the usual way to
+  /// clear a field — click it, then command+a — is not scoped to the field: it
+  /// is scoped to whatever has focus, and when focus is not where the caller
+  /// believes, command+a selects the document. Measured once in a drawing app,
+  /// where it selected every layer and the delete that followed cleared the
+  /// canvas mid-task. A range set on the element cannot do that, because the
+  /// element is named rather than assumed.
+  ///
+  /// Returns how many characters ended up selected, so a caller can tell a
+  /// selection that happened from one that silently did not.
+  func selectText(app: String, id: Int, text: String?) throws -> Int
   func raise(app: String, windowId: Int?) throws
   /// A picture of one window, PNG, wherever the window is — another Space
   /// included — without raising anything. Measured 2026-09-05: Maps' window

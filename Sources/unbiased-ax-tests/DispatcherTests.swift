@@ -192,6 +192,20 @@ final class FakeBackend: Backend {
     if valueIsNil { return nil }
     return valueOverrides[id] ?? storedValues[id]
   }
+  /// What was asked to be selected, and what the control allowed. A fake that
+  /// always selects everything cannot express a field that refuses.
+  var selections: [(id: Int, text: String?)] = []
+  var selectRefuses = false
+  func selectText(app: String, id: Int, text: String?) throws -> Int {
+    selections.append((id, text))
+    if selectRefuses { throw BridgeError.actionFailed("Element \(id) refused a text selection") }
+    let whole = (valueOverrides[id] ?? storedValues[id]) ?? ""
+    if let want = text, !want.isEmpty {
+      guard whole.contains(want) else { throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.") }
+      return want.utf16.count
+    }
+    return whole.utf16.count
+  }
   var raised: [(app: String, windowId: Int?)] = []
   func raise(app: String, windowId: Int?) throws {
     raised.append((app, windowId))}
@@ -823,6 +837,59 @@ func runRefindTests() {
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed","settle":false}}"#)
     try expect(!out.contains("valueUnchanged"), out)
+  }
+
+  test("selecting inside an element is scoped to that element, and says what it selected") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains(#""selected":6"#), out)
+    try expect(out.contains("REPLACES"), "it must say typing now replaces: \(out)")
+    try expectEqual(b.selections.count, 1)
+    try expectEqual(b.selections[0].id, 3)
+    try expect(b.selections[0].text == nil, "no text means the whole value")
+  }
+
+  test("selecting a substring selects only that") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3,"text":"1212"}}"#)
+    try expect(out.contains(#""selected":4"#), out)
+  }
+
+  test("text that is not there is refused rather than selecting everything") {
+    // The failure that matters: a near-miss must not silently fall back to
+    // selecting the whole field, because the type that follows would then
+    // destroy content the caller meant to keep.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3,"text":"999"}}"#)
+    try expect(out.contains("does not contain that text"), out)
+    try expect(!out.contains(#""ok":true"#), out)
+  }
+
+  test("an empty control says there is nothing to replace") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains(#""selected":0"#), out)
+    try expect(out.contains("nothing to replace"), out)
+  }
+
+  test("a control that refuses a selection says so rather than reporting success") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.selectRefuses = true
+    let out = call(d, #"{"id":2,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains("refused a text selection"), out)
   }
 
   test("an id that was never handed out is refused as before") {

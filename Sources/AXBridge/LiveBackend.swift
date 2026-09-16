@@ -1065,6 +1065,42 @@ public final class LiveBackend: Backend {
     return nil
   }
 
+  public func selectText(app: String, id: Int, text: String?) throws -> Int {
+    let (_, el) = try element(app, id)
+    guard let whole = try value(app: app, id: id) else {
+      throw BridgeError.actionFailed("Element \(id) exposes no text to select.")
+    }
+    // Offsets are UTF-16: AXSelectedTextRange counts the way the text system
+    // counts, and a Swift Character can be several of those. An emoji or an
+    // accented letter earlier in the field would otherwise shift the range.
+    let units = Array(whole.utf16)
+    var start = 0
+    var length = units.count
+    if let want = text, !want.isEmpty {
+      let needle = Array(want.utf16)
+      guard needle.count <= units.count else {
+        throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.")
+      }
+      var found: Int? = nil
+      for i in 0...(units.count - needle.count) where Array(units[i..<(i + needle.count)]) == needle { found = i; break }
+      guard let at = found else {
+        throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.")
+      }
+      start = at
+      length = needle.count
+    }
+    AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    var range = CFRange(location: start, length: length)
+    guard let value = AXValueCreate(.cfRange, &range) else {
+      throw BridgeError.actionFailed("Could not build a selection range for element \(id).")
+    }
+    let err = AXUIElementSetAttributeValue(el.ref, kAXSelectedTextRangeAttribute as CFString, value)
+    guard err == .success else {
+      throw BridgeError.actionFailed("Element \(id) refused a text selection (AXError \(err.rawValue)); it may not be a text control.")
+    }
+    return length
+  }
+
   public func screenshot(app: String, windowId: Int?) throws -> WindowShot {
     let a = try resolve(app)
     let wins = try windows(app: app)
