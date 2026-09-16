@@ -297,8 +297,46 @@ public final class Dispatcher {
       // honest only where a write is actually observable — a `text field`,
       // which Figma does honour.
       if (p["verify"] as? Bool) == true { try verifyValue(app, id: id, wanted: value) }
-      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key,
-                             wrote: (valueBefore, id, value))
+      // If the write did not take, do what a person does rather than handing
+      // the caller a dead end. Measured: a value write lands on text fields
+      // and is silently discarded by steppers, native selects and date
+      // fields — all of which take keystrokes perfectly well.
+      //
+      // Escalation is decided by what HAPPENED, not by the control's role. A
+      // role list is wrong on the first app nobody tested; an outcome is right
+      // everywhere, and costs nothing when the direct write works.
+      //
+      // Safe to run even when the write actually landed and merely read stale,
+      // because selecting before typing REPLACES: the field ends holding the
+      // value either way, never the value twice.
+      // Ask twice before escalating. The first read can report the value from
+      // BEFORE the write — measured on a browser text area, stale for a few
+      // hundred milliseconds — and escalating on that types the value on top
+      // of itself: "Naveen" became "NaveenNaveen", "12" became "1212". The
+      // safety of select-then-type does not survive a stale read, because the
+      // SELECTION is sized from the same stale value and selects nothing.
+      //
+      // Paid only when the first read says the write failed, and the wait is
+      // what tells a slow write from a dead one.
+      func landed() -> Bool {
+        if ((try? backend.value(app: app, id: id)) ?? nil) == value { return true }
+        Thread.sleep(forTimeInterval: Self.staleRecheck)
+        return ((try? backend.value(app: app, id: id)) ?? nil) == value
+      }
+      var route = "value"
+      if !landed(), (p["escalate"] as? Bool) != false {
+        _ = try? backend.selectText(app: app, id: id, text: nil)
+        if (try? backend.typeText(app: app, text: value, focusId: id)) != nil { route = "typed" }
+      }
+      var out = try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key,
+                                wrote: (valueBefore, id, value))
+      if route != "value", var dict = out as? [String: Any] {
+        dict["route"] = route
+        dict["routeNote"] = "The value write was accepted and did nothing, so this was typed in instead. "
+          + "That is the route this control takes; use it directly next time rather than writing the value first."
+        out = dict
+      }
+      return out
     case "selectText":
       // Select inside a named element, so the type that follows REPLACES
       // rather than appends. The alternative in use until now was command+a,
@@ -1173,6 +1211,11 @@ public final class Dispatcher {
   /// that the reply stays readable — a list of forty is another way of saying
   /// nothing.
   static let maxAmbiguous = 8
+
+  /// How long to wait before believing that a value write did nothing. Set
+  /// from measurement: a browser reports a text control's previous value for
+  /// a few hundred milliseconds after an overwrite.
+  static let staleRecheck: TimeInterval = 0.3
 
   private func selector(_ p: [String: Any]) throws -> Selector {
     Selector(

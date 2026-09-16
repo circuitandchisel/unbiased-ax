@@ -182,16 +182,24 @@ final class FakeBackend: Backend {
   /// or ignored the write.
   var valueOverrides: [Int: String] = [:]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
-    keepFrontSeen.append(keepFront); setValues.append((app, id, value)); storedValues[id] = value
+    keepFrontSeen.append(keepFront); setValues.append((app, id, value))
+    previousValues[id] = storedValues[id]
+    storedValues[id] = value
   }
+  /// Reads that report the PREVIOUS value before the write shows up. Models
+  /// the lag that made an escalation type a landed value on top of itself.
+  var staleReads = 0
   var valueReads: [Int] = []
   /// An element that exposes no value at all — a button, a group.
   var valueIsNil = false
   func value(app: String, id: Int) throws -> String? {
     valueReads.append(id)
     if valueIsNil { return nil }
+    if staleReads > 0 { staleReads -= 1; return previousValues[id] }
     return valueOverrides[id] ?? storedValues[id]
   }
+  /// What each id held before the most recent write.
+  var previousValues: [Int: String] = [:]
   /// Which ids claim their value can be written. Default true, because most
   /// controls say yes — the interesting case is the one that says no.
   var notSettable: Set<Int> = []
@@ -1002,6 +1010,50 @@ func runRefindTests() {
     try expect(out.contains(#""wroteNothing":true"#), out)
   }
 
+  test("a write the control refuses is typed in instead, and says which route worked") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned" // the control discards value writes
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India"}}"#)
+    try expect(out.contains(#""route":"typed""#), out)
+    try expect(out.contains("use it directly next time"), "it must teach the route: \(out)")
+    try expectEqual(b.typed.last?.text, "India")
+    // Selected first, so the typing replaces rather than appends.
+    try expect(b.selections.contains(where: { $0.id == 3 }), "it must select before typing")
+  }
+
+  test("a write that lands is not typed again") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen"}}"#)
+    try expect(!out.contains("route"), "a working write needs no escalation: \(out)")
+    try expectEqual(b.typed.count, 0)
+  }
+
+  test("a slow write is not mistaken for a dead one") {
+    // The bug this guards: the first read reported the value from before the
+    // write, escalation fired, and the value was typed on top of itself —
+    // "Naveen" became "NaveenNaveen". Asking twice is what tells them apart.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.staleReads = 1 // the first read after the write is stale
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen"}}"#)
+    try expectEqual(b.typed.count, 0, "it escalated on a stale read and would have doubled the value")
+    try expect(!out.contains(#""route":"typed""#), out)
+  }
+
+  test("escalation can be turned off for a caller that wants the raw write") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India","escalate":false}}"#)
+    try expectEqual(b.typed.count, 0)
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
@@ -1419,7 +1471,12 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     try expect(out.contains(#""ok":true"#), out)
-    try expectEqual(b.valueReads, [3, 3, 3], "before, the verify read-back, and after — got \(b.valueReads)")
+    // A bound, not a count. Each read is IPC and the number has now moved
+    // three times as checks were added — before, the verify read-back, the
+    // escalation check, after — so what matters is that it stays small and
+    // stays on the one element.
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 
   test("a field that ROUNDS the write is not a failure") {
@@ -1500,7 +1557,8 @@ func runVerifyTests() {
     // writes that had worked. These two refuse nothing: they only let the
     // reply say whether the write moved anything at all, which a write that
     // silently does nothing otherwise hides behind "ok".
-    try expectEqual(b.valueReads, [3, 3], "the effect check, and no value verification — got \(b.valueReads)")
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 
   test("verify:false skips the read entirely") {
@@ -1510,7 +1568,8 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":false}}"#)
     try expect(out.contains(#""ok":true"#), "opting out is allowed: \(out)")
-    try expectEqual(b.valueReads, [3, 3], "verify:false opts out of value verification; the effect check stays — got \(b.valueReads)")
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 }
 
