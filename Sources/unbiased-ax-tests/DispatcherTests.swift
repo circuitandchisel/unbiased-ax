@@ -920,6 +920,42 @@ func runRefindTests() {
     try expect(again.contains("already sent this exact action"), "a repeated press must still be refused: \(again)")
   }
 
+  test("findUnique resolves, refuses ambiguity, and does not move the diff baseline") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let one = call(d, #"{"id":2,"method":"findUnique","params":{"app":"Brave Browser","role":"text field","label":"Address"}}"#)
+    try expect(one.contains(#""ok":true"#), one)
+    try expect(one.contains(#""role":"text field""#), one)
+    try expect(one.contains(#""generation""#), "a resolved element says which read it came from: \(one)")
+
+    // Ambiguity refuses and hands back the candidates rather than choosing.
+    b.twoOKs = true
+    _ = call(d, #"{"id":3,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let many = call(d, #"{"id":4,"method":"findUnique","params":{"app":"Brave Browser","label":"OK"}}"#)
+    try expect(many.contains(#""error":"ambiguous""#), many)
+    try expect(many.contains("NOT resolve"), "it must say reading again will not help: \(many)")
+    try expect(many.contains(#""matches""#), "the candidates must come back as data: \(many)")
+
+    // An empty selector is refused: it would match everything.
+    let empty = call(d, #"{"id":5,"method":"findUnique","params":{"app":"Brave Browser"}}"#)
+    try expect(empty.contains("bad_params"), empty)
+  }
+
+  test("resolving does not consume the diff the next action would have reported") {
+    // The hazard that makes this a separate verb from `find`: resolution is
+    // meant to run immediately before acting, so if it re-baselined, the
+    // action after it would measure its diff from a snapshot taken moments
+    // earlier and report nothing happening.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.snapshotsUntilChange = 1 // the app is about to gain a node
+    _ = call(d, #"{"id":2,"method":"findUnique","params":{"app":"Brave Browser","role":"button","label":"OK"}}"#)
+    let acted = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(!acted.contains("(no changes)"), "findUnique ate the diff: \(acted)")
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)

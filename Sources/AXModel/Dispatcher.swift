@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -178,6 +178,42 @@ public final class Dispatcher {
       }
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
+    case "findUnique":
+      // Resolve ONE element from a description, or refuse. The refusal is the
+      // feature: a near-miss that quietly resolves acts on a control the
+      // caller never saw and reports success.
+      //
+      // This read does NOT store a baseline. Every other read does, because a
+      // diff has to be measured from somewhere — but a selector is meant to be
+      // resolved immediately before acting, so if it re-baselined, the action
+      // that followed would measure its diff from a snapshot taken moments
+      // earlier and report "(no changes)" for work that happened. Resolution
+      // is a question, not a step.
+      let sel = try selector(p)
+      guard !sel.isEmpty else {
+        throw BridgeError.badParams("Describe the element: role, label, value, action, enabled, selected. An empty selector matches everything.")
+      }
+      let snap = try backend.snapshot(app: app, options: options(p))
+      let gen = generations[app] ?? 0
+      switch SelectorEngine.resolve(snap.nodes, sel) {
+      case .one(let n):
+        var out = Formatter.row(n, generation: gen, geometry: true)
+        out["ok"] = true
+        return out
+      case .none(let near):
+        var out: [String: Any] = ["ok": false, "error": "not_found", "count": 0,
+                                  "near": near.map { Formatter.row($0, generation: gen, geometry: false) }]
+        out["note"] = near.isEmpty
+          ? "Nothing in \(app) matches that. Read the app: the element may not be on screen yet."
+          : "Nothing matches all of it. The elements below match all but one part — correct the selector rather than guessing again."
+        return out
+      case .many(let hits):
+        return ["ok": false, "error": "ambiguous", "count": hits.count,
+                "matches": hits.prefix(Self.maxAmbiguous).map { Formatter.row($0, generation: gen, geometry: true) },
+                "note": "\(hits.count) elements match. Nothing was chosen, because choosing would act on one the caller never saw. "
+                      + "Reading again will NOT resolve this — add role, action, or within (an ancestor's id) to say which you meant. "
+                      + "Their frames are included: they are what usually tells them apart."]
+      }
     case "menus":
       // The app's commands by name, from the CLOSED menu bar. Measured
       // 2026-09-09: asked to hide the panels before drawing, a caller pressed
@@ -1104,6 +1140,25 @@ public final class Dispatcher {
       ?? snapshots(app).lazy.compactMap({ $0.nodes.first(where: { $0.id == id }) }).first
     guard let node, !node.attributes.actions.isEmpty, !node.attributes.actions.contains(action) else { return }
     throw BridgeError.actionFailed("Element \(id) does not offer \"\(action)\"; it offers {\(node.attributes.actions.joined(separator: ","))}. Use one of those, or a different path: the keyboard, or a menu bar command.")
+  }
+
+  /// How many ambiguous matches to show. Enough to tell them apart, few enough
+  /// that the reply stays readable — a list of forty is another way of saying
+  /// nothing.
+  static let maxAmbiguous = 8
+
+  private func selector(_ p: [String: Any]) throws -> Selector {
+    Selector(
+      role: p["role"] as? String,
+      label: p["label"] as? String,
+      value: p["value"] as? String,
+      action: p["action"] as? String,
+      enabled: p["enabled"] as? Bool,
+      selected: p["selected"] as? Bool,
+      within: p["within"] as? Int,
+      contains: (p["contains"] as? Bool) ?? false,
+      caseInsensitive: (p["caseInsensitive"] as? Bool) ?? false
+    )
   }
 
   private func options(_ p: [String: Any]) -> SnapshotOptions {
