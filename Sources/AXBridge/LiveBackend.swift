@@ -1082,6 +1082,9 @@ public final class LiveBackend: Backend {
     // accented letter earlier in the field would otherwise shift the range.
     let units = Array(whole.utf16)
     var start = 0
+    // Sized from the value as read. An over-long range was tried, to make
+    // selecting "everything" independent of a possibly-stale length — Chromium
+    // does not honour it, and the typing appended anyway.
     var length = units.count
     if let want = text, !want.isEmpty {
       let needle = Array(want.utf16)

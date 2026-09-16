@@ -323,8 +323,25 @@ public final class Dispatcher {
         Thread.sleep(forTimeInterval: Self.staleRecheck)
         return ((try? backend.value(app: app, id: id)) ?? nil) == value
       }
+      // OPT-IN, and off by default. Shipped default-on and measured wrong on
+      // the first real run: it fired on writes that had LANDED and typed the
+      // value on top of itself, leaving "NaveenNaveen" and an email address
+      // written three times over. Silent failure is recoverable — the caller
+      // tries another route. Corruption is not: the caller has to notice it,
+      // and then repair a field it thought it had set.
+      //
+      // The escalation itself is right, and fixes controls nothing else
+      // reaches — Country and every part of a date, measured. What cannot be
+      // made safe is DECIDING to escalate, because that needs to tell "the
+      // write landed and the read is stale" from "the write was discarded",
+      // and both look identical through the accessibility layer. Waiting
+      // longer does not separate them; neither does selecting an over-long
+      // range, which Chromium ignores.
+      //
+      // So it waits for a verification source outside AX. Callers that know a
+      // control refuses writes can ask for it by name today.
       var route = "value"
-      if !landed(), (p["escalate"] as? Bool) != false {
+      if !landed(), (p["escalate"] as? Bool) == true {
         _ = try? backend.selectText(app: app, id: id, text: nil)
         if (try? backend.typeText(app: app, text: value, focusId: id)) != nil { route = "typed" }
       }

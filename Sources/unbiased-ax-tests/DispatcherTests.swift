@@ -1015,7 +1015,7 @@ func runRefindTests() {
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     b.valueOverrides[3] = "pinned" // the control discards value writes
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India","escalate":true}}"#)
     try expect(out.contains(#""route":"typed""#), out)
     try expect(out.contains("use it directly next time"), "it must teach the route: \(out)")
     try expectEqual(b.typed.last?.text, "India")
@@ -1040,18 +1040,18 @@ func runRefindTests() {
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     b.staleReads = 1 // the first read after the write is stale
-    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen","escalate":true}}"#)
     try expectEqual(b.typed.count, 0, "it escalated on a stale read and would have doubled the value")
     try expect(!out.contains(#""route":"typed""#), out)
   }
 
-  test("escalation can be turned off for a caller that wants the raw write") {
+  test("escalation is off unless asked for, because deciding to escalate is unsafe") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)
     _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
     b.valueOverrides[3] = "pinned"
-    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India","escalate":false}}"#)
-    try expectEqual(b.typed.count, 0)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India"}}"#)
+    try expectEqual(b.typed.count, 0, "a plain write must never type on its own")
   }
 
   test("an id that was never handed out is refused as before") {
