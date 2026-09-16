@@ -35,6 +35,25 @@ public struct WindowInfo: Codable, Equatable {
   }
 }
 
+/// How much an action's outcome can be believed.
+///
+/// Reading back the value you just wrote is the accessibility layer confirming
+/// itself; when it is stale it agrees with its own stale answer, which is how
+/// four separate measurements came out wrong. What the APP did in response —
+/// a panel opening, a row appearing, a control enabling — comes from the app
+/// and does not share that lag.
+public enum Confidence: String {
+  /// Something other than the target moved. The app reacted; it received the
+  /// action. This is the only outcome worth calling confirmed.
+  case confirmed
+  /// The target now reads as asked, and nothing else moved. Probably fine,
+  /// possibly a stale read agreeing with itself. Proceed, and say so.
+  case unverified
+  /// Neither the target nor anything else moved. Whatever was sent did not
+  /// arrive; sending it again will not change that.
+  case quiet
+}
+
 public enum BridgeError: Error {
   case badParams(String)
   case unknownMethod(String)

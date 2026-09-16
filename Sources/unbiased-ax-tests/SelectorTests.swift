@@ -104,6 +104,33 @@ func runSelectorTests() {
     try expectEqual(on.id, 3)
   }
 
+  test("changed ids name what moved, which is how an action is judged by more than itself") {
+    let before = Snapshot(nodes: [
+      SnapshotNode(id: 1, depth: 0, attributes: Attributes(role: "window", title: "W")),
+      SnapshotNode(id: 2, depth: 1, attributes: Attributes(role: "text field", value: "a")),
+    ], truncated: false)
+    let after = Snapshot(nodes: [
+      SnapshotNode(id: 1, depth: 0, attributes: Attributes(role: "window", title: "W")),
+      SnapshotNode(id: 2, depth: 1, attributes: Attributes(role: "text field", value: "b")),
+      SnapshotNode(id: 3, depth: 1, attributes: Attributes(role: "group", title: "panel")),
+    ], truncated: false)
+    let moved = Differ.changedIds(from: before, to: after)
+    try expect(moved.contains(2), "the target changed")
+    try expect(moved.contains(3), "and a panel appeared")
+    // Subtracting the target is what separates "the app reacted" from "the
+    // layer agreed with itself".
+    try expectEqual(moved.subtracting([2]), [3])
+    // A node that vanished counts too.
+    try expect(Differ.changedIds(from: after, to: before).contains(3))
+
+    // Structural change is the narrower question: the panel appearing counts,
+    // the field's value changing does not. Measured against a browser, the
+    // broad question said yes to everything, because a tab title carrying a
+    // live memory counter moves whatever you do.
+    try expectEqual(Differ.structuralIds(from: before, to: after), [3])
+    try expect(!Differ.structuralIds(from: before, to: after).contains(2), "a value tweak is not structure")
+  }
+
   test("an empty selector is not a match-everything") {
     // Guarded at the dispatcher, but the engine must not pretend either.
     try expect(Selector().isEmpty)

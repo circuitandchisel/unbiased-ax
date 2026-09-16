@@ -956,6 +956,52 @@ func runRefindTests() {
     try expect(!acted.contains("(no changes)"), "findUnique ate the diff: \(acted)")
   }
 
+  test("an action the app reacted to is confirmed; one only its own target saw is not") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    // The app gains a node in response: something other than the target moved,
+    // which is the app reacting rather than the accessibility layer agreeing
+    // with itself.
+    b.snapshotsUntilChange = 1
+    let reacted = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(reacted.contains(#""confidence":"confirmed""#), reacted)
+    try expect(!reacted.contains("confidenceNote"), "a confirmed action needs no caveat: \(reacted)")
+  }
+
+  test("a write nothing else noticed is reported unverified, with what that means") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed"}}"#)
+    try expect(out.contains(#""confidence":"unverified""#), out)
+    // The caveat has to say what to DO, or it is just hedging.
+    try expect(out.lowercased().contains("do not send"), out)
+  }
+
+  test("an interactive-only read says that TEXT answers are invisible to it") {
+    // Measured: pressing a form's save button rendered its result, and the
+    // read reported nothing changed — the result is not an interactive
+    // element, so it was never in the snapshot. A caller told only
+    // "unverified" retries; one told why looks properly.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","interactive":true}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x","interactive":true}}"#)
+    try expect(out.contains("interactive:false"), "it must name the way to look: \(out)")
+    try expect(out.contains("invisible"), out)
+  }
+
+  test("an action that moved nothing at all is quiet, not unverified") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new"}}"#)
+    try expect(out.contains(#""confidence":"quiet""#), out)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)

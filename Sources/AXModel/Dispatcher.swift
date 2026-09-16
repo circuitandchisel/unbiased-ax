@@ -785,6 +785,7 @@ public final class Dispatcher {
       }
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
+    var out0Confidence: Confidence? = nil
     let names = nameRemoved ? Self.namedRemovals : 0
     if let watch {
       let own = Differ.render(from: watch, to: snap, geometry: false, nameRemoved: names)
@@ -798,6 +799,16 @@ public final class Dispatcher {
     if let before = baseline(app, opts), diff != "(no changes)", Self.onlyMenusChanged(from: before, to: snap) {
       diff = (closing ? "The open menu closed and nothing else changed.\n"
                       : "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n") + diff
+    }
+    // What APPEARED or VANISHED besides the thing this action aimed at —
+    // computed here,
+    // while the baseline is still the snapshot from BEFORE the action. A line
+    // below replaces it; reading it after that compares the new snapshot with
+    // itself and finds nothing, which is how this first shipped.
+    if let prev = baseline(app, opts) {
+      let moved = Differ.structuralIds(from: prev, to: snap)
+      let target = wrote?.id ?? (p["id"] as? Int)
+      out0Confidence = (target.map { moved.subtracting([$0]) } ?? moved).isEmpty ? nil : .confirmed
     }
     store(app, opts, snap)
     // A write that changed the value it was aimed at, or changed anything in
@@ -829,6 +840,22 @@ public final class Dispatcher {
     }
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
     if quiet { out["wroteNothing"] = true }
+    // Stated on every action, not only on writes: a caller that is told how
+    // much to believe can decide, and one that is told nothing assumes.
+    let confidence: Confidence = out0Confidence ?? (quiet ? .quiet : .unverified)
+    out["confidence"] = confidence.rawValue
+    if confidence == .unverified {
+      // Say which blind spot applies. An interactive-only read cannot see an
+      // app answering with TEXT — measured: pressing a form's save button
+      // rendered its result and the read reported nothing changed, because the
+      // result is not an interactive element. A caller told only "unverified"
+      // would retry; one told why can look properly.
+      out["confidenceNote"] = opts.interactiveOnly
+        ? "Nothing that this read can see moved. It excluded non-interactive content, so an app answering with TEXT — a result, a status line, a message — is invisible to it. "
+          + "If this action should have produced one, read again with interactive:false before deciding it failed. Do NOT send the action again."
+        : "Nothing moved but the thing this aimed at, so the only evidence is the accessibility layer's account of its own write. "
+          + "That account can lag. Treat this as done unless something later contradicts it, and do NOT send it again to be sure."
+    }
     if let refound {
       // Say it plainly: the caller's number is stale from here on, and the
       // reason its next read looks renumbered is this, not a phantom.

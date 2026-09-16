@@ -40,6 +40,39 @@ public enum Differ {
     return lines.isEmpty ? "(no changes)" : lines.joined(separator: "\n")
   }
 
+  /// Which elements differ between two snapshots — changed, added, or gone.
+  ///
+  /// Exists so an action can be judged by what it moved BESIDES its own
+  /// target. Reading back the value you just wrote asks the accessibility
+  /// layer to confirm itself, and when that layer is stale it agrees with its
+  /// own stale answer. A panel that opened, a row that appeared, a button that
+  /// became enabled — those are the app reacting, and the app is not the thing
+  /// that lagged.
+  public static func changedIds(from before: Snapshot, to after: Snapshot) -> Set<Int> {
+    let old = Dictionary(uniqueKeysWithValues: before.nodes.map { ($0.id, $0) })
+    let new = Dictionary(uniqueKeysWithValues: after.nodes.map { ($0.id, $0) })
+    var out: Set<Int> = []
+    for n in after.nodes where old[n.id] != n { out.insert(n.id) }
+    for n in before.nodes where new[n.id] == nil { out.insert(n.id) }
+    return out
+  }
+
+  /// Elements that APPEARED or VANISHED — structural change only, ignoring
+  /// values that merely differ.
+  ///
+  /// This is the narrower question, and the useful one. "Did anything else
+  /// change" is nearly always yes in a real app: a tab title carries a live
+  /// memory counter, a clock ticks, a spinner spins. Measured against a
+  /// browser, every action looked confirmed because something unrelated always
+  /// moved. A panel opening, a menu appearing, a result rendering — those are
+  /// the app responding, and they change the SHAPE of the tree rather than a
+  /// number inside it.
+  public static func structuralIds(from before: Snapshot, to after: Snapshot) -> Set<Int> {
+    let old = Set(before.nodes.map(\.id))
+    let new = Set(after.nodes.map(\.id))
+    return new.subtracting(old).union(old.subtracting(new))
+  }
+
   /// Whether anything changed at all, without building the text. Used to poll
   /// a just-acted-on app until it has reacted: rendering a diff only to check
   /// whether it says "(no changes)" would allocate a tree of strings per poll.
