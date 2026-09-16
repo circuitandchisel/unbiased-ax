@@ -566,7 +566,12 @@ public final class Dispatcher {
       return ["values": raw.map { id -> [String: Any] in
         let attrs = idMemory[app]?[id]
         let value = (try? backend.value(app: app, id: id)) ?? nil
-        return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(), "value": value ?? NSNull()]
+        // Whether the control says its value can be written. Asked here rather
+        // than on every element of every tree: it is one more call per id, and
+        // only ids a caller named are worth paying it for.
+        let settable = (try? backend.valueSettable(app: app, id: id)) ?? false
+        return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(),
+                "value": value ?? NSNull(), "valueSettable": settable]
       }]
     case "fields":
       // The settable controls in the latest snapshot, with ids: what a caller

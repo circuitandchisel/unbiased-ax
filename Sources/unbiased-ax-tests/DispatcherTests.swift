@@ -192,6 +192,10 @@ final class FakeBackend: Backend {
     if valueIsNil { return nil }
     return valueOverrides[id] ?? storedValues[id]
   }
+  /// Which ids claim their value can be written. Default true, because most
+  /// controls say yes — the interesting case is the one that says no.
+  var notSettable: Set<Int> = []
+  func valueSettable(app: String, id: Int) throws -> Bool { !notSettable.contains(id) }
   /// What was asked to be selected, and what the control allowed. A fake that
   /// always selects everything cannot express a field that refuses.
   var selections: [(id: Int, text: String?)] = []

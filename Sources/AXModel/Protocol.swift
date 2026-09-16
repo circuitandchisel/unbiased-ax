@@ -263,6 +263,14 @@ public protocol Backend: AnyObject {
   /// turned a `180` into `120180`, and seventeen later actions were computed
   /// on top of the wrong number. nil when the element exposes no value.
   func value(app: String, id: Int) throws -> String?
+  /// Whether the element says its value can be written at all.
+  ///
+  /// The point of asking is to replace a hardcoded list of control types that
+  /// refuse writes with a question put to the control. Whether the answer can
+  /// be believed is a separate matter and has to be measured per platform: a
+  /// control that reports its value settable and then discards the write is
+  /// worse than one that says no.
+  func valueSettable(app: String, id: Int) throws -> Bool
   /// Select text INSIDE one element, so the typing that follows replaces it.
   ///
   /// `text` nil selects the whole value. This exists because the usual way to

@@ -1065,6 +1065,13 @@ public final class LiveBackend: Backend {
     return nil
   }
 
+  public func valueSettable(app: String, id: Int) throws -> Bool {
+    let (_, el) = try element(app, id)
+    var settable: DarwinBoolean = false
+    let err = AXUIElementIsAttributeSettable(el.ref, kAXValueAttribute as CFString, &settable)
+    return err == .success && settable.boolValue
+  }
+
   public func selectText(app: String, id: Int, text: String?) throws -> Int {
     let (_, el) = try element(app, id)
     guard let whole = try value(app: app, id: id) else {
