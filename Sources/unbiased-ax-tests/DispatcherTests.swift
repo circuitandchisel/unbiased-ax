@@ -896,6 +896,30 @@ func runRefindTests() {
     try expect(out.contains("refused a text selection"), out)
   }
 
+  test("stepping the same control twice is allowed; pressing it twice is not") {
+    let b = FakeBackend()
+    b.extraNodes = [FakeNode("w/step", Attributes(role: "incrementor", title: "Seats",
+                                                  width: 40, height: 20,
+                                                  actions: ["press", "increment", "decrement"]))]
+    let d = Dispatcher(backend: b)
+    let tree = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    // The tree arrives inside a JSON string, so its newlines are two
+    // characters and splitting on a Character finds one enormous line.
+    guard let at = tree.range(of: "incrementor") else { try expect(false, "no stepper: \(tree)"); return }
+    let digits = tree[..<at.lowerBound].reversed().drop(while: { $0 == " " }).prefix(while: { $0.isNumber })
+    let stepId = Int(String(digits.reversed())) ?? 0
+    try expect(stepId > 0, "could not read the stepper's id: \(tree)")
+    // Three identical increments: a climb is repetition by nature.
+    for n in 1...3 {
+      let out = call(d, #"{"id":\#(n + 1),"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"increment"}}"#)
+      try expect(!out.contains("already sent this exact action"), "step \(n) was refused as a repeat: \(out)")
+    }
+    // A press is not: repeating a dead one is the reflex the guard exists for.
+    _ = call(d, #"{"id":9,"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"press"}}"#)
+    let again = call(d, #"{"id":10,"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"press"}}"#)
+    try expect(again.contains("already sent this exact action"), "a repeated press must still be refused: \(again)")
+  }
+
   test("an id that was never handed out is refused as before") {
     let b = FakeBackend()
     let d = Dispatcher(backend: b)

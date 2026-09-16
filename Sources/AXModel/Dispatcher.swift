@@ -227,7 +227,13 @@ public final class Dispatcher {
       let id = try resolveId(app, asked)
       try offers(app, id, action)
       let key = Self.actionKey("act", id: id, detail: action)
-      try repeatCheck(app, key)
+      // Stepping is exempt, for the same reason keys are: the whole way to
+      // reach a value on an incrementor is to send the SAME action again and
+      // again, and a guard against repeating an action that changed nothing
+      // refuses the second step of every climb. Measured against a stepper:
+      // increment, increment, increment came back ok / action_failed / ok,
+      // and the failure in the middle was ours.
+      if !Self.stepping.contains(action) { try repeatCheck(app, key) }
       try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? false)
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "setValue":
@@ -1076,6 +1082,11 @@ public final class Dispatcher {
     // those — caught by the normalisation test below, not by a live run.
     if a.count > w.count, a.hasSuffix(w) { try fail("the old text was not replaced") }
   }
+
+  /// Actions whose meaning IS repetition. Nothing else belongs here: the
+  /// guard exists because a model that repeats a dead press repeats it five
+  /// times, and every exemption is a place that can happen again.
+  static let stepping: Set<String> = ["increment", "decrement"]
 
   private func repeatCheck(_ app: String, _ key: String) throws {
     guard lastNoChange[app] == key else { return }
