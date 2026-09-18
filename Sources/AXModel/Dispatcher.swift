@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique", "awaitChange"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -178,6 +178,20 @@ public final class Dispatcher {
       }
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
+    case "awaitChange":
+      // Diagnostic and, where an app posts them, the one trustworthy
+      // confirmation available: the app saying it changed something rather
+      // than us asking what it holds.
+      let waitId = try resolveId(app, try int(p, "id"))
+      let ms = (p["timeoutMs"] as? Int) ?? 1500
+      let heard = try backend.awaitValueChange(app: app, id: waitId, timeout: Double(ms) / 1000)
+      guard let heard else {
+        return ["ok": true, "observable": false,
+                "note": "This element cannot be observed, so a notification will never arrive for it. Judge the action another way."]
+      }
+      return ["ok": true, "observable": true, "changed": heard,
+              "note": heard ? "The app posted a value change for element \(waitId)."
+                            : "The app posted nothing for element \(waitId) within \(ms)ms."]
     case "findUnique":
       // Resolve ONE element from a description, or refuse. The refusal is the
       // feature: a near-miss that quietly resolves acts on a control the

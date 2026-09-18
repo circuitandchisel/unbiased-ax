@@ -202,6 +202,10 @@ final class FakeBackend: Backend {
   var previousValues: [Int: String] = [:]
   /// Which ids claim their value can be written. Default true, because most
   /// controls say yes — the interesting case is the one that says no.
+  /// What the fake app "posts". nil models an element that cannot be observed
+  /// at all, which is a different answer from observing it and hearing nothing.
+  var postsValueChange: Bool? = true
+  func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool? { postsValueChange }
   var notSettable: Set<Int> = []
   func valueSettable(app: String, id: Int) throws -> Bool { !notSettable.contains(id) }
   /// What was asked to be selected, and what the control allowed. A fake that
@@ -1052,6 +1056,31 @@ func runRefindTests() {
     b.valueOverrides[3] = "pinned"
     _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India"}}"#)
     try expectEqual(b.typed.count, 0, "a plain write must never type on its own")
+  }
+
+  test("awaitChange separates 'cannot be observed' from 'observed and silent'") {
+    // Three answers, not two. An element that refuses observation can never be
+    // confirmed this way and the caller should stop waiting for it; one that
+    // is observed and says nothing is a fact about the app. Measured against a
+    // browser: every control observable, not one notification for a write that
+    // demonstrably landed.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+
+    b.postsValueChange = true
+    let heard = call(d, #"{"id":2,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(heard.contains(#""changed":true"#), heard)
+
+    b.postsValueChange = false
+    let silent = call(d, #"{"id":3,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(silent.contains(#""observable":true"#), silent)
+    try expect(silent.contains(#""changed":false"#), silent)
+
+    b.postsValueChange = nil
+    let deaf = call(d, #"{"id":4,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(deaf.contains(#""observable":false"#), deaf)
+    try expect(deaf.contains("will never arrive"), "it must say to stop waiting: \(deaf)")
   }
 
   test("an id that was never handed out is refused as before") {

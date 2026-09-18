@@ -282,6 +282,15 @@ public protocol Backend: AnyObject {
   /// turned a `180` into `120180`, and seventeen later actions were computed
   /// on top of the wrong number. nil when the element exposes no value.
   func value(app: String, id: Int) throws -> String?
+  /// Ask the app to TELL us when this element's value changes, and wait for it
+  /// to say so. Returns nil when the element cannot be observed at all, which
+  /// is different from observing it and hearing nothing.
+  ///
+  /// The only signal here that is not a read. Everything else asks the
+  /// accessibility layer what happened, and that layer can answer with the
+  /// state from before the action; a notification is posted by the app when
+  /// the change occurs and cannot describe a moment that has not happened.
+  func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool?
   /// Whether the element says its value can be written at all.
   ///
   /// The point of asking is to replace a hardcoded list of control types that

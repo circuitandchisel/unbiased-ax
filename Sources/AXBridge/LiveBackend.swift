@@ -1065,6 +1065,16 @@ public final class LiveBackend: Backend {
     return nil
   }
 
+  public func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool? {
+    let (a, el) = try element(app, id)
+    let mark = AXNotifications.shared.mark()
+    guard AXNotifications.shared.watch(pid: a.processIdentifier, element: el.ref,
+                                       notification: kAXValueChangedNotification as String) else { return nil }
+    return AXNotifications.shared.await(element: el.ref,
+                                        notification: kAXValueChangedNotification as String,
+                                        since: mark, timeout: timeout)
+  }
+
   public func valueSettable(app: String, id: Int) throws -> Bool {
     let (_, el) = try element(app, id)
     var settable: DarwinBoolean = false
