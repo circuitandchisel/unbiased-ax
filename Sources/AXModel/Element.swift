@@ -11,13 +11,23 @@ public struct Attributes: Equatable {
   /// False when the element reports no position/size at all — the application
   /// root, for one. "Unknown" is not "zero": only known-zero is invisible.
   public var geometryKnown: Bool = true
+  /// The element declares that it announces its own changes — an ARIA live
+  /// region, which is how an application ANSWERS: a result, a status line, a
+  /// validation message. It is not interactive and carries no action, so every
+  /// interactive-only read dropped it, and a caller asked what the app said
+  /// could not see the reply it was looking at. Measured 2026-09-18: a form
+  /// printed its result into one of these and a default read returned not one
+  /// line of it.
+  public var announces: Bool = false
 
   public init(role: String, title: String? = nil, value: String? = nil,
               x: Int = 0, y: Int = 0, width: Int = 0, height: Int = 0,
-              actions: [String] = [], enabled: Bool = true, focused: Bool = false, selected: Bool = false) {
+              actions: [String] = [], enabled: Bool = true, focused: Bool = false, selected: Bool = false,
+              announces: Bool = false) {
     self.role = role; self.title = title; self.value = value
     self.x = x; self.y = y; self.width = width; self.height = height
     self.actions = actions; self.enabled = enabled; self.focused = focused; self.selected = selected
+    self.announces = announces
   }
 }
 

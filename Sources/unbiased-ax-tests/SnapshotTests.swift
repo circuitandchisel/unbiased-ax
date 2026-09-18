@@ -106,4 +106,20 @@ func runSnapshotTests() {
     let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init(interactiveOnly: true))
     try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "OK"])
   }
+  test("interactive-only mode keeps a live region: it is how an app answers") {
+    // Same shape as the test above — a text leaf beside a button — and the
+    // only difference is that this one announces. Decoration goes, the reply
+    // stays. Measured 2026-09-18: a form printed its result into one of these
+    // and a default read returned not one line of it, so the caller had to
+    // quote the reply out of a diff and could not re-read it at all.
+    var announcing = Attributes(role: "text", title: "SAVED", width: 200, height: 40)
+    announcing.announces = true
+    let root = group("w", [FakeNode("w/deco", Attributes(role: "text", title: "Hello", width: 50, height: 12)),
+                           FakeNode("w/live", announcing),
+                           button("w/ok", "OK")], title: "Save")
+    root.attrs.role = "standard window"
+    var reg = IdRegistry()
+    let snap = Snapshot.build(root: root, source: source, registry: &reg, options: .init(interactiveOnly: true))
+    try expectEqual(snap.nodes.map(\.attributes.title), ["Save", "SAVED", "OK"])
+  }
 }

@@ -82,7 +82,18 @@ public struct Snapshot: Equatable {
         for k in kids { visit(k, depth: depth) }
         return
       }
-      if options.interactiveOnly && structural && kids.isEmpty && depth > 0 { return }
+      // An interactive-only read keeps one kind of non-interactive leaf: the
+      // kind that announces. A live region is how an application REPLIES —
+      // result, status, validation — and dropping it meant a caller could ask
+      // what the app said and be shown nothing, with no sign anything was
+      // missing. Measured 2026-09-18: a form printed its result into one and a
+      // default read returned not one line of it, so the reply had to be read
+      // out of a diff and could not be re-read at all.
+      //
+      // Narrow on purpose. Not "keep text": this page alone holds fourteen
+      // text nodes, and a real application holds thousands — which is the cost
+      // this filter exists to avoid. Only elements that declare they announce.
+      if options.interactiveOnly && structural && !attrs.announces && kids.isEmpty && depth > 0 { return }
 
       let identity = source.identity(of: node)
       // The same element can hang off two parents (Chromium does this with its

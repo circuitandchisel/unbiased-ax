@@ -38,6 +38,10 @@ public enum Formatter {
     if let v = a.value, !v.isEmpty { out["value"] = v }
     if a.focused { out["focused"] = true }
     if a.selected { out["selected"] = true }
+    // Stated only when true, like the rest: this is the element the app speaks
+    // through, and a caller asking what an app said wants to know which row
+    // that is.
+    if a.announces { out["announces"] = true }
     if geometry && a.geometryKnown {
       out["frame"] = ["x": a.x, "y": a.y, "w": a.width, "h": a.height]
     }
