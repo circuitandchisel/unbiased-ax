@@ -10,7 +10,7 @@
 
 **Read first:** `docs/plans/2026-09-04-cross-space-design.md` (the validated design and every measured number) and `scripts/probe/README.md` (the token layout and the probes). The bridge repo has no XCTest: tests are an executable, `make test` runs them, and `Sources/unbiased-ax-tests/Harness.swift` is the entire assertion API (`test`, `expect`, `expectEqual`). `AXBridge` has no unit tests by design — verification there is the runtime self-check plus manual probes.
 
-**Two repositories.** Tasks 1–8 are in this worktree (`unbiased-ax`). Tasks 9–12 are in the unbiased-app worktree the dev build runs from: `/Users/naveen/Projects/Work/unbiased-app/.claude/worktrees/agitated-wilbur-0ab621` (branch `fix/ax-launch-scroll-verbs`). Every path below is relative to whichever repo the task names.
+**Two repositories.** Tasks 1–8 are in the `unbiased-ax` worktree. Tasks 9–12 are in the `unbiased-app` worktree used by the dev build. Every path below is relative to whichever repo the task names.
 
 ---
 
@@ -813,14 +813,14 @@ Expected: `dist/unbiased-ax (…), dist/manifest.json`.
 The dev app resolves the bridge from a sibling checkout (`resolveAxDir`), so it will pick up `dist/` from whichever `unbiased-ax` directory is beside the app worktree. Confirm which one:
 
 ```bash
-ls -la /Users/naveen/Projects/Work/unbiased-app/.claude/worktrees/agitated-wilbur-0ab621/../../../unbiased-ax/dist 2>/dev/null || echo "the app resolves a different checkout — set UNBIASED_AX_DIR to this worktree's dist when launching the dev app"
+ls -la /path/to/unbiased-ax/dist 2>/dev/null || echo "the app resolves a different checkout — set UNBIASED_AX_DIR to this worktree's dist when launching the dev app"
 ```
 
 **Step 3: Commit nothing** — `dist/` is gitignored. Proceed to Part B.
 
 ---
 
-## Part B — unbiased-app (`/Users/naveen/Projects/Work/unbiased-app/.claude/worktrees/agitated-wilbur-0ab621`)
+## Part B — unbiased-app
 
 Run tests with: `node --import tsx --test src/main/ax-bridge.test.ts`
 Typecheck with: `npm run typecheck`
@@ -1117,7 +1117,7 @@ The number that started this: 10 raises in four minutes. The target is 0.
 From the app worktree:
 
 ```bash
-UNBIASED_AX_DEBUG=1 UNBIASED_AX_DIR=/Users/naveen/Projects/Work/unbiased-ax/.claude/worktrees/repo-comprehension-579cb2/dist npm run dev
+UNBIASED_AX_DEBUG=1 UNBIASED_AX_DIR=/path/to/unbiased-ax/dist npm run dev
 ```
 
 Confirm in `/tmp/unbiased-ax-diag.log`: `bridge <version> ready (trusted, cross-Space on)`. If it says `off`, the self-check failed under the app's identity — read the bridge's stderr (`[ax] cross-Space self-check: ...`) in the app console before going further.

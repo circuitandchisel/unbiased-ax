@@ -163,7 +163,7 @@ finish()
 
 **Step 6: Build and run the tests**
 
-Run: `cd /Users/naveen/Projects/Work/unbiased-ax && swift build && swift run unbiased-ax-tests`
+Run: `cd /path/to/unbiased-ax && swift build && swift run unbiased-ax-tests`
 Expected: `Build complete!`, then `  ✔ protocol version is declared` and `1 passed, 0 failed`, exit 0.
 
 **Step 7: Commit**
