@@ -95,4 +95,19 @@ func runQuietPointerTests() {
       try expect(!QuietPointer.enabled(["UNBIASED_AX_QUIET_POINTER": off]), "\(off) should turn it off")
     }
   }
+
+  print("The background-pointer route")
+  test("on unless the environment turns it off — the user's cursor is theirs") {
+    // It was off by default until a drawing run proved it. Off meant the agent
+    // took the real pointer AND drew no agent cursor, since the agent cursor
+    // exists only on this route.
+    try expect(BackgroundPointerRoute.enabled([:]))
+    try expect(BackgroundPointerRoute.enabled(["UNBIASED_AX_BACKGROUND_POINTER": ""]))
+    try expect(BackgroundPointerRoute.enabled(["UNBIASED_AX_BACKGROUND_POINTER": "1"]))
+  }
+  test("and it can still be turned off on a running machine") {
+    for off in ["0", "false", "FALSE", "No", " off "] {
+      try expect(!BackgroundPointerRoute.enabled(["UNBIASED_AX_BACKGROUND_POINTER": off]), "\(off) should turn it off")
+    }
+  }
 }

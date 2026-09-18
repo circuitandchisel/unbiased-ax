@@ -13,12 +13,28 @@ public enum QuietPointer {
 }
 
 /// Addresses the window rather than the screen: the app is never raised, the
-/// window stays on its own Space, and the pointer never moves. Off by default
-/// until it has drawn a full pen path and a shape-drawing run — the two
-/// workloads that broke both earlier routes.
+/// window stays on its own Space, and the pointer never moves.
+///
+/// ON by default since 2026-09-18, when it finally drew the run it was waiting
+/// for — a full pen path traced into a Figma frame, every pointer call
+/// recorded as the window route, the app never raised and the cursor never
+/// taken. The same drawing with this off had raised Figma and driven the real
+/// pointer for ten minutes, and cost 624 seconds and 89 turns against 169 and
+/// 22.
+///
+/// The default was the wrong way round for a second reason, which only showed
+/// once someone watched a run: the agent cursor is drawn ONLY on this route,
+/// because it is the only one where there is no real pointer to follow. So off
+/// meant the agent took the user's cursor AND drew nothing to explain why —
+/// intrusive and invisible at once.
+///
+/// Turning it on cannot break a machine that cannot do it: the route is gated
+/// again at the call site by BackgroundPointer.available, which needs several
+/// private symbols to resolve. Where they do not, this falls back to the
+/// earlier routes exactly as before.
 public enum BackgroundPointerRoute {
   public static func enabled(_ env: [String: String]) -> Bool {
-    Switch.on(env["UNBIASED_AX_BACKGROUND_POINTER"], default: false)
+    Switch.on(env["UNBIASED_AX_BACKGROUND_POINTER"], default: true)
   }
 }
 
