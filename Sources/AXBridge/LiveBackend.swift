@@ -305,6 +305,25 @@ public final class LiveBackend: Backend {
     }
     down.postToPid(a.processIdentifier)
     up.postToPid(a.processIdentifier)
+    // Let the app's input handler run before anything else is posted.
+    //
+    // A posted event is consumed on the app's own run loop, and nothing in
+    // Accessibility acknowledges that it was. So the only way not to outrun it
+    // is to leave a gap. A settled call leaves a large one — it reads the tree
+    // straight after — which is why this never showed up outside batches, where
+    // steps pass settle:false and the gap was zero.
+    //
+    // Measured 2026-09-18, nine digits aimed one per segment at a date field
+    // and a number field, sent as batch steps, two trials at each spacing:
+    //   0ms   FAIL FAIL   (all nine digits piled into one field)
+    //   20ms  PASS PASS
+    //   50ms  PASS PASS   100ms PASS PASS   200ms PASS PASS
+    // So 20ms is the floor, and it is already the constant typeText puts
+    // between characters for exactly this reason. Same number, same cause.
+    //
+    // The cost is 20ms per key: a sixteen-key batch pays a third of a second,
+    // against runs that measure 86% model time. Not worth a cleverer rule.
+    usleep(Self.typeStepUs)
   }
 
   /// Pointer input inside one element. See the protocol for why the caller
