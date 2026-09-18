@@ -281,6 +281,21 @@ public final class LiveBackend: Backend {
     return f
   }
 
+  public func stateFlag(app: String, id: Int, attribute: String) throws -> Bool? {
+    let (_, el) = try element(app, id)
+    // The names list first, and it is not an optimisation: a value read alone
+    // reports false for an attribute the element does not have, so asking for
+    // the value without asking whether it exists invents a state.
+    var names: CFArray?
+    guard AXUIElementCopyAttributeNames(el.ref, &names) == .success,
+          let list = names as? [String], list.contains(attribute) else { return nil }
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, attribute as CFString, &v) == .success, let value = v else { return nil }
+    if CFGetTypeID(value) == CFBooleanGetTypeID() { return CFBooleanGetValue((value as! CFBoolean)) }
+    if let n = value as? NSNumber { return n.boolValue }
+    return nil
+  }
+
   public func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws {
     let a = try resolve(app)
     // Focus first when the caller named a target: a key event goes to whatever

@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique", "awaitChange"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique", "awaitChange", "verify"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -192,6 +192,72 @@ public final class Dispatcher {
       return ["ok": true, "observable": true, "changed": heard,
               "note": heard ? "The app posted a value change for element \(waitId)."
                             : "The app posted nothing for element \(waitId) within \(ms)ms."]
+    case "verify":
+      // The caller says what success looks like; this says whether that is
+      // true. Three values, because two would be a lie: `unknown` is the
+      // bridge admitting it cannot prove the thing either way, and it is NOT
+      // success. A caller that treats unknown as yes has learned nothing and
+      // will act on it.
+      //
+      // Deliberately separate from an action's `confidence`. That is this
+      // bridge guessing at meaning from a diff — useful, weak, and ours to
+      // infer. This is a postcondition the CALLER defined, which is the only
+      // kind that can be checked without inventing what the task meant.
+      //
+      // It polls fresh snapshots rather than acting again. A lagging tree is
+      // answered by looking again; it is never answered by pressing again.
+      let vSel = try selector(p)
+      guard !vSel.isEmpty else {
+        throw BridgeError.badParams("Describe the element to check: role, label, value, action, enabled, selected.")
+      }
+      let expect = (p["expect"] as? [String: Any]) ?? [:]
+      let wantExists = (expect["exists"] as? Bool) ?? true
+      let timeoutMs = min(max((p["timeoutMs"] as? Int) ?? 1500, 0), 15_000)
+      let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+      var lastNote = "Nothing matching that description was found."
+      while true {
+        let snap = try backend.snapshot(app: app, options: options(p))
+        switch SelectorEngine.resolve(snap.nodes, vSel) {
+        case .many(let all):
+          // Waiting cannot fix this: the same several come back every time.
+          return ["ok": true, "verdict": "unknown", "matched": all.count,
+                  "note": "\(all.count) elements match that description, so there is no saying which one the expectation was about. unknown is NOT success. Narrow it — a role, a within, the exact label — and ask again."]
+        case .none:
+          if !wantExists {
+            return ["ok": true, "verdict": "satisfied",
+                    "note": "Nothing matches that description, which is what was expected."]
+          }
+          lastNote = "Nothing matches that description."
+        case .one(let n):
+          if !wantExists {
+            lastNote = "Element \(n.id) still matches that description; it was expected to be gone."
+            break
+          }
+          var met = true
+          var unprovable: String? = nil
+          for (key, want) in expect where key != "exists" {
+            switch try check(app, n, key, want) {
+            case .met: continue
+            case .notMet: met = false
+            case .unprovable(let why): unprovable = why
+            }
+            if unprovable != nil { break }
+          }
+          if let why = unprovable {
+            return ["ok": true, "verdict": "unknown", "id": n.id,
+                    "note": why + " unknown is NOT success: do not treat this as done, and do not repeat the action to find out."]
+          }
+          if met {
+            return ["ok": true, "verdict": "satisfied", "id": n.id,
+                    "note": "Element \(n.id) matches, and every expectation holds."]
+          }
+          lastNote = "Element \(n.id) matches the description, but the expected state is not the one it reports."
+        }
+        if Date() >= deadline { break }
+        Thread.sleep(forTimeInterval: 0.1)
+      }
+      return ["ok": true, "verdict": "unsatisfied",
+              "note": lastNote + " Still so after \(timeoutMs)ms of looking again. This is a real answer, not a timeout: the expected state did not arrive."]
     case "findUnique":
       // Resolve ONE element from a description, or refuse. The refusal is the
       // feature: a near-miss that quietly resolves acts on a control the
@@ -925,6 +991,26 @@ public final class Dispatcher {
         : "Nothing moved but the thing this aimed at, so the only evidence is the accessibility layer's account of its own write. "
           + "That account can lag. Treat this as done unless something later contradicts it, and do NOT send it again to be sure."
     }
+    // A toggle is the one control where trying again is worse than doing
+    // nothing. If the first press landed and only the read lagged, a second
+    // press CLOSES what the first opened. Measured 2026-09-18 on an accordion:
+    // the rows vanished, and the run read that as the controls having stopped
+    // working — it gave up with one of four items done, having undone its own
+    // success.
+    //
+    // So when nothing was confirmed AND the target is one of these, say it,
+    // rather than leaving the caller to draw the obvious wrong conclusion. The
+    // bridge still does not retry anything by itself: it says what the control
+    // is and what to check. Costs one attribute read, only on the path where
+    // nothing was proven.
+    if confidence != .confirmed, let tid = wrote?.id ?? (p["id"] as? Int) {
+      let role = snap.nodes.first(where: { $0.id == tid })?.attributes.role
+      if isToggle(app, tid, role: role) {
+        out["toggle"] = true
+        out["toggleNote"] = "Element \(tid) has an open/closed state, so sending this again may UNDO what just happened rather than repeat it. "
+          + "Do not press it again to be sure. Ask where it stands — verify with a selector for it and expect {\"expanded\": true} or false — and act on that answer."
+      }
+    }
     if let refound {
       // Say it plainly: the caller's number is stale from here on, and the
       // reason its next read looks renumbered is this, not a phantom.
@@ -1247,6 +1333,41 @@ public final class Dispatcher {
   /// from measurement: a browser reports a text control's previous value for
   /// a few hundred milliseconds after an overwrite.
   static let staleRecheck: TimeInterval = 0.3
+
+  private enum Check { case met, notMet, unprovable(String) }
+
+  /// One expectation against one resolved element. Anything this cannot prove
+  /// says so rather than guessing — an unprovable expectation is `unknown`,
+  /// never a quiet false.
+  private func check(_ app: String, _ node: SnapshotNode, _ key: String, _ want: Any) throws -> Check {
+    switch key {
+    case "expanded":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.expanded must be true or false.") }
+      // Presence from the names list, never from the raw value — see stateFlag.
+      guard let has = try backend.stateFlag(app: app, id: node.id, attribute: "AXExpanded") else {
+        return .unprovable("Element \(node.id) exposes no open/closed state at all, so whether it is expanded cannot be proved from here.")
+      }
+      return has == want ? .met : .notMet
+    case "selected":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.selected must be true or false.") }
+      return node.attributes.selected == want ? .met : .notMet
+    case "focused":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.focused must be true or false.") }
+      return node.attributes.focused == want ? .met : .notMet
+    case "value":
+      guard let want = want as? String else { throw BridgeError.badParams("expect.value must be a string.") }
+      return (node.attributes.value ?? "") == want ? .met : .notMet
+    default:
+      throw BridgeError.badParams("Unknown expectation \"\(key)\". Use exists, expanded, selected, focused or value.")
+    }
+  }
+
+  /// Would pressing this again undo what the last press did?
+  static let toggleRoles: Set<String> = ["checkbox", "check box", "disclosure triangle"]
+  private func isToggle(_ app: String, _ id: Int, role: String?) -> Bool {
+    if let role, Self.toggleRoles.contains(role) { return true }
+    return ((try? backend.stateFlag(app: app, id: id, attribute: "AXExpanded")) ?? nil) != nil
+  }
 
   private func selector(_ p: [String: Any]) throws -> Selector {
     Selector(

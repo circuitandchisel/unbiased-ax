@@ -172,6 +172,12 @@ final class FakeBackend: Backend {
   func pressMenuItem(app: String, path: [String], keepFront: Bool) throws { pressedMenus.append(path) }
   var clickCounts: [Int] = []
   var keepFrontSeen: [Bool] = []
+  /// Which elements expose which boolean states, by id. Absent means the
+  /// element does not list the attribute — the case a raw value read cannot
+  /// distinguish, and the one worth testing.
+  var flags: [Int: [String: Bool]] = [:]
+  func stateFlag(app: String, id: Int, attribute: String) throws -> Bool? { flags[id]?[attribute] }
+
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
     keepFrontSeen.append(keepFront); acted.append((app, id, action))
   }

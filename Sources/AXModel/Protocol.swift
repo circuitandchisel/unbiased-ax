@@ -221,6 +221,18 @@ public protocol Backend: AnyObject {
   /// after every action only un-does the one raise that made the app readable,
   /// so the next read finds it gone and raises again — a switch per action.
   /// Raise once, work there, and leave the user where the work is.
+  /// A boolean state an element may or may not expose — AXExpanded and its
+  /// kind. nil means the element does not list the attribute AT ALL, which is
+  /// a different thing from false.
+  ///
+  /// That distinction is the whole reason this exists. Measured twice on
+  /// Chrome, 2026-09-18: a value read answers 0 for elements that have no such
+  /// attribute, so "AXExpanded = 0" cannot tell a closed accordion from a
+  /// control with no open/closed state at all. The same trap caught AXARIAAtomic,
+  /// which is listed on a live region and answered false for every element
+  /// alike. Presence has to come from the attribute-NAMES list; only then does
+  /// the value mean anything.
+  func stateFlag(app: String, id: Int, attribute: String) throws -> Bool?
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws
   /// A named key, delivered to the app as a real key event. For what the
   /// Accessibility API has no verb for: committing an omnibox, dismissing a
