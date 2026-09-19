@@ -9,9 +9,9 @@
 **Tech Stack:** Swift 5.9 package (`make test` = `swift build && swift run unbiased-ax-tests`, executable harness, no XCTest); Electron main process in TypeScript (`npm test` = `node --import tsx --test src/main/*.test.ts`, `npm run typecheck`).
 
 **Trees:**
-- Bridge: `/Users/naveen/Projects/Work/unbiased-ax/.claude/worktrees/folder-comprehension-subagents-4e96f9` on `naveen/folder-comprehension-subagents-4e96f9` (= `main` @ `96fa7b3`).
-- App: `/Users/naveen/Projects/Work/unbiased-app/.claude/worktrees/figma-followups-4e96f9` on `naveen/figma-followups-4e96f9` (= `main` @ `5585020`).
-- Do NOT touch `.claude/worktrees/agitated-wilbur-0ab621` (app) or `.claude/worktrees/repo-comprehension-579cb2` (bridge): another session works there.
+- Bridge: a dedicated `unbiased-ax` worktree based on the recorded baseline.
+- App: a dedicated `unbiased-app` worktree based on the recorded baseline.
+- Do not reuse worktrees owned by another active session.
 
 **Measured facts this plan rests on** (diag log 15:26–15:58 UTC, rollout `01a081a0-…`): 171 tool calls, 87 model turns, 117s in tools (6%), median model gap 8.9s; compactions at 15:40:34 and 15:49:30 with a 124,518-token window; 54 `computer_app_state` calls of which 32 were `query`, 14 asked `full:true`, 28 flipped `web`/`interactive` between consecutive reads; 20 full trees ≈ 185KB; the four-step stepper recipe (`pointer`,`⌘a`,`type`,`return`) bypasses `verifyValue`, so the model re-read after every batch; 14 turns opened "You're right/Good call" with no human in the loop, three of them reacting to `ACTION_NO_CHANGE_SENTENCE` or the batch caveat; `escape` after Figma's colour picker hit the 3.5s shrink deadline 8 times.
 
@@ -752,4 +752,4 @@ Keep the existing example of what a good note looks like (palette, shapes DONE/n
 
 1. Bridge: `make test` → all green; `make bundle` → `dist/unbiased-ax` answers `{"id":1,"method":"values","params":{"app":"Finder","ids":[1]}}` with `values` (or `not_trusted` from a shell, which still proves the verb exists — `unknown_method` would not).
 2. App: `npm test` (expect 240 + new), `npm run typecheck`.
-3. Report: per-task commits on both branches, test counts, and that nothing is merged or pushed. A live Figma re-run needs the dev app started from the app tree with `UNBIASED_AX_DIR=<bridge tree>/dist UNBIASED_AX_DEBUG=1 npm run dev` (plus `UNBIASED_ENGINE_DIR=/Users/naveen/Projects/Work/unbiased-app-engine/dist/bundle` from a worktree) — the user's call.
+3. Report: per-task commits on both branches, test counts, and that nothing is merged or pushed. A live Figma re-run needs the dev app started from the app tree with `UNBIASED_AX_DIR=<bridge tree>/dist UNBIASED_AX_DEBUG=1 npm run dev` (plus `UNBIASED_ENGINE_DIR=/path/to/unbiased-app-engine/dist/bundle`) — the user's call.
