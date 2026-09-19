@@ -144,9 +144,16 @@ final class FakeBackend: Backend {
   /// third point of a path and nothing under the first two.
   var pointerHitSequence: [HitRelation] = []
   var pointerHitCalls = 0
-  func prepareForPointer(app: String) throws -> Bool {
-    // Addressing the window needs no raise, however far away the window is.
-    if backgroundRoute { return false }
+  /// Whether this element's window id resolves. False models the per-element
+  /// failure a process-wide capability check cannot see.
+  var windowTargetResolves = true
+  func prepareForPointer(app: String, id: Int, modifiers: [String], clicks: Int) throws -> Bool {
+    // Addressing the window needs no raise, however far away the window is —
+    // but only for a call the window route can actually carry. Mirrors the
+    // live backend: no modifiers, at most a double click, and a resolvable
+    // window. This fake used to skip on `backgroundRoute` alone, which is why
+    // nothing caught the guards being skipped for the other calls.
+    if backgroundRoute, modifiers.isEmpty, clicks <= 2, windowTargetResolves { return false }
     guard hideWindows || parkedWindow else { return false }
     raisedForPointer += 1
     // The fake's window comes back to this Space once it is asked for.

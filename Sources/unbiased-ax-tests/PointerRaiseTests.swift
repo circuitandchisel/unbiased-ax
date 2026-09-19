@@ -66,6 +66,44 @@ func runPointerRaiseTests() {
     try expectEqual(b.pointerCalls.count, 1, "and the click still went through")
   }
 
+  // The window route is chosen per call, so the guards it lets us skip may only
+  // be skipped per call. Each of these three is a click the window route cannot
+  // carry: it falls through to the event route, which posts at real screen
+  // coordinates — so an off-Space window has to be brought forward first, or
+  // the click lands on whatever application is actually at those coordinates.
+  test("a modifier click on an off-Space window is still brought forward") {
+    let b = FakeBackend()
+    b.hideWindows = true
+    b.backgroundRoute = true
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":1,"path":[{"x":0.5,"y":0.5}],"modifiers":["shift"]}}"#)
+    try expectEqual(b.raisedForPointer, 1, "modifiers cannot ride the window route, so this must raise: \(out)")
+  }
+
+  test("a third click on an off-Space window is still brought forward") {
+    let b = FakeBackend()
+    b.hideWindows = true
+    b.backgroundRoute = true
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":1,"path":[{"x":0.5,"y":0.5}],"clicks":3}}"#)
+    try expectEqual(b.raisedForPointer, 1, "a triple click cannot ride the window route: \(out)")
+  }
+
+  test("an element whose window cannot be resolved is still brought forward") {
+    // The failure a process-wide capability check cannot see: the symbols
+    // resolve, the switch is on, and THIS element still has no window id.
+    let b = FakeBackend()
+    b.hideWindows = true
+    b.backgroundRoute = true
+    b.windowTargetResolves = false
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"pointer","params":{"app":"Brave Browser","id":1,"path":[{"x":0.5,"y":0.5}]}}"#)
+    try expectEqual(b.raisedForPointer, 1, "no window id means the event route, which needs the window here: \(out)")
+  }
+
   test("addressing the window says so, and does not claim the pointer was handed back") {
     let b = FakeBackend()
     b.backgroundRoute = true

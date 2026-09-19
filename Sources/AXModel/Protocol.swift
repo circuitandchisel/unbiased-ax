@@ -276,7 +276,11 @@ public protocol Backend: AnyObject {
   /// forward if it is on another Space. Returns whether it had to. Called
   /// before the aim checks, because those hit-test the real screen: a window
   /// the user cannot see answers them with whatever is in front of it.
-  func prepareForPointer(app: String) throws -> Bool
+  /// The id, modifiers and click count are NOT decoration: whether the window
+  /// route can serve a pointer call is decided per call, not per process, and
+  /// this has to ask the same question pointer() will ask. See the
+  /// implementation for what happened when it asked a coarser one.
+  func prepareForPointer(app: String, id: Int, modifiers: [String], clicks: Int) throws -> Bool
   /// The element holding keyboard focus, as its role and title, or nil when the
   /// app reports none. Typed text goes wherever this is.
   func focusedControl(app: String) throws -> (role: String, title: String?)?

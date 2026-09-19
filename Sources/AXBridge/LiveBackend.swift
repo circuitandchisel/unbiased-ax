@@ -571,13 +571,31 @@ public final class LiveBackend: Backend {
   /// app being drawn in, and the run fell apart between them.
   private var frontBeforeRaise: NSRunningApplication?
 
-  public func prepareForPointer(app: String) throws -> Bool {
+  public func prepareForPointer(app: String, id: Int, modifiers: [String], clicks: Int) throws -> Bool {
     let a = try resolve(app)
     // Nothing to prepare when the click can be addressed at the window: that
-    // route needs no raise, no Space switch and no pointer. Whether it is
-    // usable for a given ELEMENT is decided in pointer(), which raises there if
-    // it turns out the window cannot be addressed after all.
-    if Self.backgroundPointer, BackgroundPointer.available { frontBeforeRaise = nil; return false }
+    // route needs no raise, no Space switch and no pointer.
+    //
+    // This must ask the SAME question pointer() asks, and ask it about this
+    // call. It used to test only `backgroundPointer && available`, which is
+    // process-wide, while the route is chosen per call from the element, the
+    // modifiers and the click count. Every call that failed the per-call test
+    // and fell through to the event route therefore skipped the two guards
+    // below — and that route posts at real screen coordinates. A shift-click,
+    // a third click, or an element whose window id cannot be resolved, aimed
+    // at a window on another Space or parked by Stage Manager, landed on
+    // whatever application was actually at those coordinates.
+    //
+    // Harmless while the route was off by default; live the moment it became
+    // the default. The older comment here claimed pointer() "raises there if it
+    // turns out the window cannot be addressed after all" — it does not, and
+    // never did.
+    if Self.backgroundPointer, BackgroundPointer.available,
+       Self.flags(for: modifiers).isEmpty, clicks <= 2,
+       let el = try? element(app, id).1, Self.windowTarget(of: el) != nil {
+      frontBeforeRaise = nil
+      return false
+    }
     func visible() -> Bool {
       guard parkedWindow(app: app) == nil, let wins = try? windows(app: app) else { return false }
       return wins.contains { $0.onSpace }
