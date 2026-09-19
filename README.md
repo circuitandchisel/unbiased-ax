@@ -123,3 +123,7 @@ does. It costs the browser measurable work per page, so it is opt-in.
     docs/INTEGRATION.md       how unbiased-app consumes this
     docs/plans/               the implementation plan this was built from
     scripts/probe/            the probes behind the cross-Space design (docs/plans/2026-09-04-cross-space-design.md)
+
+## License
+
+Licensed under Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
