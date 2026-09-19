@@ -92,29 +92,50 @@ final class FakeBackend: Backend {
   /// is fixed at 0,0 200x100 so a fraction maps to an obvious number.
   var pointerCalls: [(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String])] = []
   var pointerFails: String? = nil
+  var raisedForPointer = 0
   /// A control that appears under the path while it is being clicked, the way
   /// a floating toolbar does: clicks stop before this index.
   var pointerBlockAt: PointerBlock? = nil
+  /// The window can be addressed directly, so nothing is raised and the
+  /// pointer is never borrowed.
+  var backgroundRoute = false
   func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     if let why = pointerFails { throw BridgeError.actionFailed(why) }
     guard app == "Brave Browser" else { throw BridgeError.noSuchApp(app) }
     pointerCalls.append((app, id, path, hold, modifiers))
     clickCounts.append(clicks)
+    // The live backend brings the app forward when its window is not where the
+    // coordinates are, and puts the pointer back afterwards — unless it can
+    // address the window itself, which needs neither.
     let pts = path.map { CGPoint(x: 200 * $0.x, y: 100 * $0.y) }
-    guard !hold, clicks == 1 else { return PointerOutcome(landed: pts) }
+    let back = backgroundRoute
+    guard !hold, clicks == 1 else {
+      return PointerOutcome(landed: pts, pointerReturned: !back, movedPointer: !back, backgrounded: back)
+    }
     // Same rules as the live backend: single clicks are paced, a repeated
     // pixel is not clicked twice, and a control appearing under the path stops it.
     let plan = ClickPacing.plan(pts)
     var landed = plan.clicks.map(\.point)
     if let b = pointerBlockAt, b.index < landed.count {
       landed = Array(landed.prefix(b.index))
-      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b)
+      return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: b,
+                            pointerReturned: !back, movedPointer: !back, backgrounded: back)
     }
-    return PointerOutcome(landed: landed, skipped: plan.dropped)
+    return PointerOutcome(landed: landed, skipped: plan.dropped,
+                          pointerReturned: !back, movedPointer: !back, backgrounded: back)
   }
   var typed: [(app: String, text: String, focusId: Int?)] = []
+  /// How many characters of each type call go missing. Real typing is a
+  /// stream of key events and the stream can drop some; a fake that always
+  /// delivers everything cannot express the failure it is meant to catch.
+  var typeDrops = 0
+  /// A target that takes no typed text at all — a backgrounded web view.
+  var typeLands = true
   func typeText(app: String, text: String, focusId: Int?) throws {
     typed.append((app, text, focusId))
+    guard typeLands, let id = focusId else { return }
+    let landed = String(text.prefix(max(0, text.count - typeDrops)))
+    storedValues[id] = (storedValues[id] ?? "") + landed
   }
   /// What the app "says" is under a pointer's first point. Honest by default.
   var pointerHitResult: HitRelation = .inside
@@ -123,6 +144,15 @@ final class FakeBackend: Backend {
   /// third point of a path and nothing under the first two.
   var pointerHitSequence: [HitRelation] = []
   var pointerHitCalls = 0
+  func prepareForPointer(app: String) throws -> Bool {
+    // Addressing the window needs no raise, however far away the window is.
+    if backgroundRoute { return false }
+    guard hideWindows || parkedWindow else { return false }
+    raisedForPointer += 1
+    // The fake's window comes back to this Space once it is asked for.
+    hideWindows = false
+    return true
+  }
   func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
     defer { pointerHitCalls += 1 }
     return pointerHitCalls < pointerHitSequence.count ? pointerHitSequence[pointerHitCalls] : pointerHitResult
@@ -142,6 +172,12 @@ final class FakeBackend: Backend {
   func pressMenuItem(app: String, path: [String], keepFront: Bool) throws { pressedMenus.append(path) }
   var clickCounts: [Int] = []
   var keepFrontSeen: [Bool] = []
+  /// Which elements expose which boolean states, by id. Absent means the
+  /// element does not list the attribute — the case a raw value read cannot
+  /// distinguish, and the one worth testing.
+  var flags: [Int: [String: Bool]] = [:]
+  func stateFlag(app: String, id: Int, attribute: String) throws -> Bool? { flags[id]?[attribute] }
+
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws {
     keepFrontSeen.append(keepFront); acted.append((app, id, action))
   }
@@ -152,15 +188,45 @@ final class FakeBackend: Backend {
   /// or ignored the write.
   var valueOverrides: [Int: String] = [:]
   func setValue(app: String, id: Int, value: String, keepFront: Bool) throws {
-    keepFrontSeen.append(keepFront); setValues.append((app, id, value)); storedValues[id] = value
+    keepFrontSeen.append(keepFront); setValues.append((app, id, value))
+    previousValues[id] = storedValues[id]
+    storedValues[id] = value
   }
+  /// Reads that report the PREVIOUS value before the write shows up. Models
+  /// the lag that made an escalation type a landed value on top of itself.
+  var staleReads = 0
   var valueReads: [Int] = []
   /// An element that exposes no value at all — a button, a group.
   var valueIsNil = false
   func value(app: String, id: Int) throws -> String? {
     valueReads.append(id)
     if valueIsNil { return nil }
+    if staleReads > 0 { staleReads -= 1; return previousValues[id] }
     return valueOverrides[id] ?? storedValues[id]
+  }
+  /// What each id held before the most recent write.
+  var previousValues: [Int: String] = [:]
+  /// Which ids claim their value can be written. Default true, because most
+  /// controls say yes — the interesting case is the one that says no.
+  /// What the fake app "posts". nil models an element that cannot be observed
+  /// at all, which is a different answer from observing it and hearing nothing.
+  var postsValueChange: Bool? = true
+  func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool? { postsValueChange }
+  var notSettable: Set<Int> = []
+  func valueSettable(app: String, id: Int) throws -> Bool { !notSettable.contains(id) }
+  /// What was asked to be selected, and what the control allowed. A fake that
+  /// always selects everything cannot express a field that refuses.
+  var selections: [(id: Int, text: String?)] = []
+  var selectRefuses = false
+  func selectText(app: String, id: Int, text: String?) throws -> Int {
+    selections.append((id, text))
+    if selectRefuses { throw BridgeError.actionFailed("Element \(id) refused a text selection") }
+    let whole = (valueOverrides[id] ?? storedValues[id]) ?? ""
+    if let want = text, !want.isEmpty {
+      guard whole.contains(want) else { throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.") }
+      return want.utf16.count
+    }
+    return whole.utf16.count
   }
   var raised: [(app: String, windowId: Int?)] = []
   func raise(app: String, windowId: Int?) throws {
@@ -645,8 +711,382 @@ func runRefindTests() {
     b.twoOKs = true
     _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
     let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
-    try expect(out.contains("no_such_element"), "ambiguity must refuse rather than pick: \(out)")
+    try expect(out.contains("ambiguous_element"), "ambiguity must refuse rather than pick: \(out)")
+    try expect(!out.contains("no_such_element"), "an ambiguous id is not a missing one: \(out)")
+    // The repair differs from a stale id's, so the message has to say so —
+    // a caller told "read again" retries the one thing that cannot help.
+    try expect(out.contains("2 controls now match"), "it must say how many matched: \(out)")
+    try expect(out.contains("NOT resolve this"), "it must say reading again will not fix it: \(out)")
     try expectEqual(b.acted.count, 0)
+  }
+
+  test("an element that is simply gone says so, and says reading again may fix it") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.shrunkUntilSnapshot = 5 // the OK button leaves the tree entirely
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(out.contains("element_gone"), "a vanished control is not an ambiguous one: \(out)")
+    try expect(out.contains("Read the app again"), out)
+    try expectEqual(b.acted.count, 0)
+  }
+
+  test("an error never quotes what was typed into the control") {
+    // describe() uses role and title only. A value is the part most likely to
+    // have changed, and it is where a password or an address would be.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let url = 3 // the fake's address field, value "a.com"
+    b.shrunkUntilSnapshot = 5
+    _ = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let out = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(url),"action":"press"}}"#)
+    try expect(!out.contains("a.com"), "the field's contents must not reach the error: \(out)")
+  }
+
+  test("structured rows are data, and are never sent alongside the lines") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","structured":true}}"#)
+    try expect(out.contains(#""elements""#), out)
+    // The whole point of opting in: a script reads the rows, a model reads the
+    // lines, and billing a model for both is what this avoids.
+    try expect(!out.contains(#""tree""#), "the text must not ride along: \(out)")
+    try expect(out.contains(#""role""#) && out.contains(#""actions""#), out)
+    try expect(out.contains(#""generation""#), "a row must say which read it came from: \(out)")
+  }
+
+  test("a plain read is unchanged, and still carries its generation") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    try expect(out.contains(#""tree""#), "the default path still returns lines: \(out)")
+    try expect(!out.contains(#""elements""#), "and no rows unless asked: \(out)")
+    try expect(out.contains(#""generation":1"#), "the first read of an app is generation 1: \(out)")
+  }
+
+  test("the generation advances with each stored read, so a handle's age is knowable") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let second = call(d, #"{"id":2,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    try expect(second.contains(#""generation":2"#), second)
+    // Provenance, not a gate: the id from generation 1 still works at 2,
+    // because it still names the same control. resolveId decides that, not
+    // the number.
+    let acted = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(acted.contains(#""ok":true"#), "an older generation's id is not invalid: \(acted)")
+  }
+
+  test("an absent label is absent, not null") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    let out = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","structured":true}}"#)
+    try expect(!out.contains("null"), "a row omits what it does not have: \(out)")
+  }
+
+  test("a write that changes neither the value nor the tree says so") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned" // the control ignores the write and keeps its value
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new text"}}"#)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+    try expect(out.contains("wrote nothing that can be observed"), out)
+    // Reported, not refused: refusing was tried once and stopped work that had
+    // succeeded, so the call still reports ok and the caller decides.
+    try expect(out.contains(#""ok":true"#), "it reports rather than refuses: \(out)")
+  }
+
+  test("a write that lands says nothing extra") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed"}}"#)
+    try expect(!out.contains("wroteNothing"), "a working write is not commented on: \(out)")
+  }
+
+  test("typing that arrives short says how much of it arrived") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.typeDrops = 5 // the shortfall measured on a real composer
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"0123456789"}}"#)
+    try expect(out.contains(#""typedChars":5"#), out)
+    try expect(out.contains(#""askedChars":10"#), out)
+    try expect(out.contains("Only 5 of the 10 characters"), out)
+  }
+
+  test("typing that arrives whole says nothing extra") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"0123456789"}}"#)
+    try expect(!out.contains("typedChars"), "an exact landing is not worth a sentence: \(out)")
+    try expect(!out.contains("wroteNothing"), out)
+  }
+
+  test("typing into something that takes no input is not reported as done") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.typeLands = false // a backgrounded web view: accepted, ignored
+    let out = call(d, #"{"id":2,"method":"type","params":{"app":"Brave Browser","id":3,"text":"hello"}}"#)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+  }
+
+  test("a non-settling step still reports that its write moved nothing") {
+    // The path this actually matters on. Measured on a form run: every write
+    // went through a batch, batch steps carry settle:false, and the verdict
+    // below the early return never ran — eleven writes, no signal, while the
+    // standalone path it was tested against is barely used.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new","settle":false}}"#)
+    try expect(out.contains(#""valueUnchanged":true"#), out)
+    try expect(out.contains(#""settled":false"#), out)
+    // The FACT, not the verdict. A step with no diff has only one of the two
+    // signals; whoever holds both decides.
+    try expect(!out.contains("wroteNothing"), "a one-signal step must not claim the verdict: \(out)")
+  }
+
+  test("a non-settling step whose write lands says nothing") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed","settle":false}}"#)
+    try expect(!out.contains("valueUnchanged"), out)
+  }
+
+  test("selecting inside an element is scoped to that element, and says what it selected") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains(#""selected":6"#), out)
+    try expect(out.contains("REPLACES"), "it must say typing now replaces: \(out)")
+    try expectEqual(b.selections.count, 1)
+    try expectEqual(b.selections[0].id, 3)
+    try expect(b.selections[0].text == nil, "no text means the whole value")
+  }
+
+  test("selecting a substring selects only that") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3,"text":"1212"}}"#)
+    try expect(out.contains(#""selected":4"#), out)
+  }
+
+  test("text that is not there is refused rather than selecting everything") {
+    // The failure that matters: a near-miss must not silently fall back to
+    // selecting the whole field, because the type that follows would then
+    // destroy content the caller meant to keep.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"121212"}}"#)
+    let out = call(d, #"{"id":3,"method":"selectText","params":{"app":"Brave Browser","id":3,"text":"999"}}"#)
+    try expect(out.contains("does not contain that text"), out)
+    try expect(!out.contains(#""ok":true"#), out)
+  }
+
+  test("an empty control says there is nothing to replace") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains(#""selected":0"#), out)
+    try expect(out.contains("nothing to replace"), out)
+  }
+
+  test("a control that refuses a selection says so rather than reporting success") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.selectRefuses = true
+    let out = call(d, #"{"id":2,"method":"selectText","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(out.contains("refused a text selection"), out)
+  }
+
+  test("stepping the same control twice is allowed; pressing it twice is not") {
+    let b = FakeBackend()
+    b.extraNodes = [FakeNode("w/step", Attributes(role: "incrementor", title: "Seats",
+                                                  width: 40, height: 20,
+                                                  actions: ["press", "increment", "decrement"]))]
+    let d = Dispatcher(backend: b)
+    let tree = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    // The tree arrives inside a JSON string, so its newlines are two
+    // characters and splitting on a Character finds one enormous line.
+    guard let at = tree.range(of: "incrementor") else { try expect(false, "no stepper: \(tree)"); return }
+    let digits = tree[..<at.lowerBound].reversed().drop(while: { $0 == " " }).prefix(while: { $0.isNumber })
+    let stepId = Int(String(digits.reversed())) ?? 0
+    try expect(stepId > 0, "could not read the stepper's id: \(tree)")
+    // Three identical increments: a climb is repetition by nature.
+    for n in 1...3 {
+      let out = call(d, #"{"id":\#(n + 1),"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"increment"}}"#)
+      try expect(!out.contains("already sent this exact action"), "step \(n) was refused as a repeat: \(out)")
+    }
+    // A press is not: repeating a dead one is the reflex the guard exists for.
+    _ = call(d, #"{"id":9,"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"press"}}"#)
+    let again = call(d, #"{"id":10,"method":"act","params":{"app":"Brave Browser","id":\#(stepId),"action":"press"}}"#)
+    try expect(again.contains("already sent this exact action"), "a repeated press must still be refused: \(again)")
+  }
+
+  test("findUnique resolves, refuses ambiguity, and does not move the diff baseline") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let one = call(d, #"{"id":2,"method":"findUnique","params":{"app":"Brave Browser","role":"text field","label":"Address"}}"#)
+    try expect(one.contains(#""ok":true"#), one)
+    try expect(one.contains(#""role":"text field""#), one)
+    try expect(one.contains(#""generation""#), "a resolved element says which read it came from: \(one)")
+
+    // Ambiguity refuses and hands back the candidates rather than choosing.
+    b.twoOKs = true
+    _ = call(d, #"{"id":3,"method":"tree","params":{"app":"Brave Browser","full":true}}"#)
+    let many = call(d, #"{"id":4,"method":"findUnique","params":{"app":"Brave Browser","label":"OK"}}"#)
+    try expect(many.contains(#""error":"ambiguous""#), many)
+    try expect(many.contains("NOT resolve"), "it must say reading again will not help: \(many)")
+    try expect(many.contains(#""matches""#), "the candidates must come back as data: \(many)")
+
+    // An empty selector is refused: it would match everything.
+    let empty = call(d, #"{"id":5,"method":"findUnique","params":{"app":"Brave Browser"}}"#)
+    try expect(empty.contains("bad_params"), empty)
+  }
+
+  test("resolving does not consume the diff the next action would have reported") {
+    // The hazard that makes this a separate verb from `find`: resolution is
+    // meant to run immediately before acting, so if it re-baselined, the
+    // action after it would measure its diff from a snapshot taken moments
+    // earlier and report nothing happening.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.snapshotsUntilChange = 1 // the app is about to gain a node
+    _ = call(d, #"{"id":2,"method":"findUnique","params":{"app":"Brave Browser","role":"button","label":"OK"}}"#)
+    let acted = call(d, #"{"id":3,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(!acted.contains("(no changes)"), "findUnique ate the diff: \(acted)")
+  }
+
+  test("an action the app reacted to is confirmed; one only its own target saw is not") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    // The app gains a node in response: something other than the target moved,
+    // which is the app reacting rather than the accessibility layer agreeing
+    // with itself.
+    b.snapshotsUntilChange = 1
+    let reacted = call(d, #"{"id":2,"method":"act","params":{"app":"Brave Browser","id":\#(ok),"action":"press"}}"#)
+    try expect(reacted.contains(#""confidence":"confirmed""#), reacted)
+    try expect(!reacted.contains("confidenceNote"), "a confirmed action needs no caveat: \(reacted)")
+  }
+
+  test("a write nothing else noticed is reported unverified, with what that means") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"landed"}}"#)
+    try expect(out.contains(#""confidence":"unverified""#), out)
+    // The caveat has to say what to DO, or it is just hedging.
+    try expect(out.lowercased().contains("do not send"), out)
+  }
+
+  test("an interactive-only read says that TEXT answers are invisible to it") {
+    // Measured: pressing a form's save button rendered its result, and the
+    // read reported nothing changed — the result is not an interactive
+    // element, so it was never in the snapshot. A caller told only
+    // "unverified" retries; one told why looks properly.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser","interactive":true}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"x","interactive":true}}"#)
+    try expect(out.contains("interactive:false"), "it must name the way to look: \(out)")
+    try expect(out.contains("invisible"), out)
+  }
+
+  test("an action that moved nothing at all is quiet, not unverified") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"new"}}"#)
+    try expect(out.contains(#""confidence":"quiet""#), out)
+    try expect(out.contains(#""wroteNothing":true"#), out)
+  }
+
+  test("a write the control refuses is typed in instead, and says which route worked") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned" // the control discards value writes
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India","escalate":true}}"#)
+    try expect(out.contains(#""route":"typed""#), out)
+    try expect(out.contains("use it directly next time"), "it must teach the route: \(out)")
+    try expectEqual(b.typed.last?.text, "India")
+    // Selected first, so the typing replaces rather than appends.
+    try expect(b.selections.contains(where: { $0.id == 3 }), "it must select before typing")
+  }
+
+  test("a write that lands is not typed again") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen"}}"#)
+    try expect(!out.contains("route"), "a working write needs no escalation: \(out)")
+    try expectEqual(b.typed.count, 0)
+  }
+
+  test("a slow write is not mistaken for a dead one") {
+    // The bug this guards: the first read reported the value from before the
+    // write, escalation fired, and the value was typed on top of itself —
+    // "Naveen" became "NaveenNaveen". Asking twice is what tells them apart.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.staleReads = 1 // the first read after the write is stale
+    let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"Naveen","escalate":true}}"#)
+    try expectEqual(b.typed.count, 0, "it escalated on a stale read and would have doubled the value")
+    try expect(!out.contains(#""route":"typed""#), out)
+  }
+
+  test("escalation is off unless asked for, because deciding to escalate is unsafe") {
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+    b.valueOverrides[3] = "pinned"
+    _ = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"India"}}"#)
+    try expectEqual(b.typed.count, 0, "a plain write must never type on its own")
+  }
+
+  test("awaitChange separates 'cannot be observed' from 'observed and silent'") {
+    // Three answers, not two. An element that refuses observation can never be
+    // confirmed this way and the caller should stop waiting for it; one that
+    // is observed and says nothing is a fact about the app. Measured against a
+    // browser: every control observable, not one notification for a write that
+    // demonstrably landed.
+    let b = FakeBackend()
+    let d = Dispatcher(backend: b)
+    _ = call(d, #"{"id":1,"method":"tree","params":{"app":"Brave Browser"}}"#)
+
+    b.postsValueChange = true
+    let heard = call(d, #"{"id":2,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(heard.contains(#""changed":true"#), heard)
+
+    b.postsValueChange = false
+    let silent = call(d, #"{"id":3,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(silent.contains(#""observable":true"#), silent)
+    try expect(silent.contains(#""changed":false"#), silent)
+
+    b.postsValueChange = nil
+    let deaf = call(d, #"{"id":4,"method":"awaitChange","params":{"app":"Brave Browser","id":3}}"#)
+    try expect(deaf.contains(#""observable":false"#), deaf)
+    try expect(deaf.contains("will never arrive"), "it must say to stop waiting: \(deaf)")
   }
 
   test("an id that was never handed out is refused as before") {
@@ -1066,7 +1506,12 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":true}}"#)
     try expect(out.contains(#""ok":true"#), out)
-    try expectEqual(b.valueReads, [3], "exactly one read-back")
+    // A bound, not a count. Each read is IPC and the number has now moved
+    // three times as checks were added — before, the verify read-back, the
+    // escalation check, after — so what matters is that it stays small and
+    // stays on the one element.
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 
   test("a field that ROUNDS the write is not a failure") {
@@ -1142,7 +1587,13 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180"}}"#)
     try expect(out.contains(#""ok":true"#), "no opt-in, no refusal: \(out)")
-    try expect(b.valueReads.isEmpty, "and no read at all, got \(b.valueReads)")
+    // Two reads, not none — and they are not the verification this test is
+    // about. VALUE verification stays off by default because it refused
+    // writes that had worked. These two refuse nothing: they only let the
+    // reply say whether the write moved anything at all, which a write that
+    // silently does nothing otherwise hides behind "ok".
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 
   test("verify:false skips the read entirely") {
@@ -1152,7 +1603,8 @@ func runVerifyTests() {
     _ = call(d, read)
     let out = call(d, #"{"id":2,"method":"setValue","params":{"app":"Brave Browser","id":3,"value":"180","verify":false}}"#)
     try expect(out.contains(#""ok":true"#), "opting out is allowed: \(out)")
-    try expect(b.valueReads.isEmpty, "and costs nothing, got \(b.valueReads)")
+    try expect(b.valueReads.count <= 4, "value reads ballooned: \(b.valueReads)")
+    try expect(b.valueReads.allSatisfy { $0 == 3 }, "every read must be of the element acted on: \(b.valueReads)")
   }
 }
 

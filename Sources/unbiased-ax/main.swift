@@ -7,6 +7,9 @@ import AXBridge
 // written to stdout; diagnostics go to stderr.
 // The same binary is also the window-capture helper: see WindowCapture.
 if WindowCapture.isHelperInvocation(CommandLine.arguments) { WindowCapture.helperMain(CommandLine.arguments) }
+// And as the drawn-pointer overlay, which needs a run loop the stdin loop below
+// cannot give it. See AgentCursor.
+if AgentCursor.isHelperInvocation(CommandLine.arguments) { AgentCursor.helperMain() }
 
 let dispatcher = Dispatcher(backend: LiveBackend())
 while let line = readLine(strippingNewline: true) {

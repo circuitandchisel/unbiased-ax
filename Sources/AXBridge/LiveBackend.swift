@@ -281,6 +281,21 @@ public final class LiveBackend: Backend {
     return f
   }
 
+  public func stateFlag(app: String, id: Int, attribute: String) throws -> Bool? {
+    let (_, el) = try element(app, id)
+    // The names list first, and it is not an optimisation: a value read alone
+    // reports false for an attribute the element does not have, so asking for
+    // the value without asking whether it exists invents a state.
+    var names: CFArray?
+    guard AXUIElementCopyAttributeNames(el.ref, &names) == .success,
+          let list = names as? [String], list.contains(attribute) else { return nil }
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, attribute as CFString, &v) == .success, let value = v else { return nil }
+    if CFGetTypeID(value) == CFBooleanGetTypeID() { return CFBooleanGetValue((value as! CFBoolean)) }
+    if let n = value as? NSNumber { return n.boolValue }
+    return nil
+  }
+
   public func pressKey(app: String, key: String, modifiers: [String], focusId: Int?) throws {
     let a = try resolve(app)
     // Focus first when the caller named a target: a key event goes to whatever
@@ -305,6 +320,25 @@ public final class LiveBackend: Backend {
     }
     down.postToPid(a.processIdentifier)
     up.postToPid(a.processIdentifier)
+    // Let the app's input handler run before anything else is posted.
+    //
+    // A posted event is consumed on the app's own run loop, and nothing in
+    // Accessibility acknowledges that it was. So the only way not to outrun it
+    // is to leave a gap. A settled call leaves a large one — it reads the tree
+    // straight after — which is why this never showed up outside batches, where
+    // steps pass settle:false and the gap was zero.
+    //
+    // Measured 2026-09-18, nine digits aimed one per segment at a date field
+    // and a number field, sent as batch steps, two trials at each spacing:
+    //   0ms   FAIL FAIL   (all nine digits piled into one field)
+    //   20ms  PASS PASS
+    //   50ms  PASS PASS   100ms PASS PASS   200ms PASS PASS
+    // So 20ms is the floor, and it is already the constant typeText puts
+    // between characters for exactly this reason. Same number, same cause.
+    //
+    // The cost is 20ms per key: a sixteen-key batch pays a third of a second,
+    // against runs that measure 86% model time. Not worth a cleverer rule.
+    usleep(Self.typeStepUs)
   }
 
   /// Pointer input inside one element. See the protocol for why the caller
@@ -319,21 +353,98 @@ public final class LiveBackend: Backend {
   /// click would land on whatever is at that spot instead.
   public func pointer(app: String, id: Int, path: [(x: Double, y: Double)], hold: Bool, modifiers: [String], clicks: Int) throws -> PointerOutcome {
     let a = try resolve(app)
+    // Three routes, best first. Addressing the window needs nothing raised and
+    // no pointer. Failing that, a quiet click delivers at a point without the
+    // cursor going there. Failing that, the event route posts at real screen
+    // coordinates, which means the window has to be where those coordinates
+    // are — so the app is brought forward and the pointer handed back.
+    //
+    // The first route was written off once, on a measurement that posted a
+    // bare event with no target pid, no window number and no window-local
+    // point, and concluded per-process delivery was ignored. It is not: see
+    // BackgroundPointer, which also records the coordinate mistake that hid
+    // this for a day.
+    // The frame is read AFTER the app is forward (prepareForPointer ran first):
+    // coming from another Space or out of Stage Manager can move and resize it.
     let (_, el) = try element(app, id)
-    guard let frame = Self.frame(of: el) else {
+    // Read it until it holds still. A window that has just come from another
+    // Space keeps moving for a moment, and accessibility reports each
+    // intermediate position as fact: measured 2026-09-11, aiming at the first
+    // answer put the click 54x108 points from the control, every time, in a
+    // way no hit test could catch because accessibility agreed with itself.
+    guard let frame = Self.settledFrame(of: el) else {
       throw BridgeError.actionFailed("element \(id) does not report a position and size, so there is nothing to aim inside")
     }
     guard frame.width > 1, frame.height > 1 else {
       throw BridgeError.actionFailed("element \(id) is \(Int(frame.width))x\(Int(frame.height)); too small to aim inside")
     }
-    if let parked = parkedWindow(app: app) {
-      throw BridgeError.actionFailed("\(a.localizedName ?? app)'s window is parked by Stage Manager at \(parked.actual.w)x\(parked.actual.h), so it is not where these coordinates are on screen and a click would land on whatever is. Pointer input is the one thing that needs the window really visible: raise the app first, and say so to the user, or do this with the keyboard and menus instead.")
-    }
-    if let wins = try? windows(app: app), wins.allSatisfy({ !$0.onSpace }) {
-      throw BridgeError.actionFailed("\(a.localizedName ?? app) has no window on this Space, so a click at these coordinates would land on another app. Raise it first, or use the keyboard and menus.")
-    }
     let points = path.map { CGPoint(x: frame.minX + frame.width * $0.x, y: frame.minY + frame.height * $0.y) }
     let f = Self.flags(for: modifiers)
+    // Where the user left the pointer. Posting to the HID tap moves the real
+    // pointer — there is one — so it is borrowed for the length of the path
+    // and handed back at the end, wherever the path finished and whatever went
+    // wrong on the way.
+    // Whoever the user was working in before this click. Clicking a window
+    // activates its app, the same as a real click would, and an app left in
+    // front with a drawing tool selected takes over the cursor: measured
+    // 2026-09-11, the pointer turned into a pen and the user could not use
+    // their own machine for the length of the run. So the app is put back.
+    // A drag holds the mouse button down across several posts. If anything
+    // between the press and the release goes wrong, the button stays down as
+    // far as every app on the machine is concerned, and the user is left
+    // dragging something they never picked up. Released whatever happens.
+    var buttonIsDown: CGPoint?
+    defer {
+      if let at = buttonIsDown {
+        if let post = Self.postMouse { _ = post(at, 0, 1, 0) }
+        else { CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: at, mouseButton: .left)?.post(tap: .cghidEventTap) }
+      }
+    }
+    let frontBefore = frontBeforeRaise
+    frontBeforeRaise = nil
+    defer {
+      if let before = frontBefore,
+         before.processIdentifier != a.processIdentifier,
+         before.processIdentifier != NSWorkspace.shared.frontmostApplication?.processIdentifier {
+        // A short settle first: the app we clicked may still be coming
+        // forward, and reactivating into that race just loses.
+        usleep(120_000)
+        before.activate(options: [])
+      }
+    }
+    let cursorHome = CGEvent(source: nil)?.location
+    // Addressing the window is the best of the three when it is available: no
+    // raise, no Space switch, no pointer borrowed. Modifiers still need the
+    // event route, which carries flags this one does not — but a double click
+    // does NOT: click state is a field on the event, so it rides along.
+    // Excluding it cost a borrowed cursor in the middle of someone's typing,
+    // measured 2026-09-14, for no reason at all.
+    let target = (Self.backgroundPointer && BackgroundPointer.available && f.isEmpty && clicks <= 2)
+      ? Self.windowTarget(of: el) : nil
+    // Modifiers and multi-clicks still need the event route, which carries
+    // flags and a click state the quiet one cannot.
+    let quiet = target == nil && Self.quietPointer && Self.postMouse != nil && f.isEmpty && clicks == 1
+    // A drag takes the cursor whichever route carries it — holding the button
+    // across points drags the cursor with it, measured 2026-09-13 — so the
+    // quiet route has nothing to offer a drag and does not get one.
+    var movedPointer = !quiet && target == nil
+    defer {
+      // Only worth putting back if it was taken.
+      if movedPointer, let home = cursorHome {
+        CGWarpMouseCursorPosition(home)
+        // Apple's own advice after a warp: without this the pointer ignores
+        // the user's next movements for a moment.
+        CGAssociateMouseAndMouseCursorPosition(1)
+      }
+    }
+    /// One click at a point, leaving the cursor alone.
+    func quietClick(_ at: CGPoint) {
+      guard let post = Self.postMouse else { return }
+      _ = post(at, 0, 1, 1)
+      usleep(Self.pointerWithinClickUs)
+      _ = post(at, 0, 1, 0)
+      usleep(Self.pointerStepUs)
+    }
     func post(_ type: CGEventType, _ at: CGPoint, clickState: Int = 1, then gap: UInt32 = Self.pointerStepUs) {
       guard let ev = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: at, mouseButton: .left) else { return }
       ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickState))
@@ -341,12 +452,36 @@ public final class LiveBackend: Backend {
       ev.post(tap: .cghidEventTap)
       usleep(gap)
     }
+    if let target {
+      BackgroundPointer.beginGesture(pid: a.processIdentifier, windowId: target.id)
+    }
+    // Whatever happens to the path, the user gets their key window back.
+    defer { if let target { BackgroundPointer.endGesture(pid: a.processIdentifier, windowId: target.id) } }
     if hold, points.count > 1 {
+      if let target {
+        for pt in points { AgentCursor.show(at: pt) }
+        BackgroundPointer.drag(pid: a.processIdentifier, windowId: target.id,
+                               path: points.map { (screen: $0, local: Self.local($0, target.origin)) })
+        AgentCursor.done()
+        return PointerOutcome(landed: points, pointerReturned: false, movedPointer: false, backgrounded: true)
+      }
+      // Otherwise the event route. The quiet one can put a click where the
+      // pointer never went, but it cannot say "moved while held": it re-posts
+      // the same button state at each point, with no movement before the
+      // press. A surface that begins a drag on the hover and follows it by
+      // deltas — a canvas, a small handle — then sees nothing to drag.
+      // Measured 2026-09-14: quietly, the drag that draws a shape drew none
+      // and a shape's own handle did not move; the same three drags took
+      // first time this way. The cursor is taken either way, so this costs
+      // the user nothing.
+      movedPointer = true
       post(.mouseMoved, points[0])
       post(.leftMouseDown, points[0])
-      for pt in points.dropFirst() { post(.leftMouseDragged, pt) }
+      buttonIsDown = points[0]
+      for pt in points.dropFirst() { post(.leftMouseDragged, pt); buttonIsDown = pt }
       post(.leftMouseUp, points[points.count - 1])
-      return PointerOutcome(landed: points)
+      buttonIsDown = nil
+      return PointerOutcome(landed: points, pointerReturned: cursorHome != nil, movedPointer: true)
     } else if clicks == 1 {
       // Single clicks along a path — the shape of pen-tool tracing. Two clicks
       // within the double-click radius and interval ARE a double-click, whoever
@@ -366,33 +501,109 @@ public final class LiveBackend: Backend {
         // control there; from the second on, a control under the point stops
         // the path in front of it, and the caller is told where.
         if i > 0, case .unrelated(let role, let title) = relation(at: step.point, anchor: el, anchorFrame: frame, root: root) {
-          return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title))
+          return PointerOutcome(landed: landed, skipped: plan.dropped, blocked: PointerBlock(index: i, role: role, title: title),
+                                pointerReturned: movedPointer && cursorHome != nil, movedPointer: movedPointer)
         }
         if step.waitFirst { Thread.sleep(forTimeInterval: NSEvent.doubleClickInterval + 0.1) }
         // The cadence the app needs is between POINTS; the move, press and
         // release of one click are one gesture and want only a moment apart.
         // Measured 2026-09-10: a 112-point trace paced at 70ms after every
         // event took 33s, 23s of which were the two intra-click gaps.
-        post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
-        post(.leftMouseDown, step.point, then: Self.pointerWithinClickUs)
-        post(.leftMouseUp, step.point)
+        if let target {
+          AgentCursor.show(at: step.point)
+          BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
+                                  screen: step.point, local: Self.local(step.point, target.origin), clicks: clicks)
+        } else if quiet {
+          quietClick(step.point)
+        } else {
+          post(.mouseMoved, step.point, then: Self.pointerWithinClickUs)
+          post(.leftMouseDown, step.point, then: Self.pointerWithinClickUs)
+          post(.leftMouseUp, step.point)
+        }
         landed.append(step.point)
       }
-      return PointerOutcome(landed: landed, skipped: plan.dropped)
+      // The path is finished; tell the window the pointer left, or it goes on
+      // drawing one where the last click landed.
+      if let target {
+        BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id)
+        AgentCursor.done()
+      }
+      return PointerOutcome(landed: landed, skipped: plan.dropped, pointerReturned: movedPointer && cursorHome != nil,
+                            movedPointer: movedPointer, backgrounded: target != nil)
     } else {
       for pt in points {
-        post(.mouseMoved, pt)
         // A double click is not two clicks: the click STATE rises within one
         // gesture, and an app can honour the second and ignore a pair of
         // singles. Measured on Figma's position steppers, where one click did
         // not open the field for editing and a double click did.
+        //
+        // The window route carries that state as a field, so it takes this
+        // branch too. Allowing a double click to CHOOSE the route without
+        // teaching this branch to use it was a real bug and a bad one: the
+        // outcome said the pointer had not been touched, so it was never put
+        // back, while these posts moved it anyway. Measured 2026-09-14 — the
+        // cursor was taken mid-drawing and left where it landed.
+        if let target {
+          AgentCursor.show(at: pt)
+          BackgroundPointer.click(pid: a.processIdentifier, windowId: target.id,
+                                  screen: pt, local: Self.local(pt, target.origin), clicks: clicks)
+          continue
+        }
+        post(.mouseMoved, pt)
         for n in 1...max(1, clicks) {
           post(.leftMouseDown, pt, clickState: n)
           post(.leftMouseUp, pt, clickState: n)
         }
       }
+      if let target {
+        BackgroundPointer.park(pid: a.processIdentifier, windowId: target.id)
+        AgentCursor.done()
+      }
     }
-    return PointerOutcome(landed: points)
+    return PointerOutcome(landed: points, pointerReturned: movedPointer && cursorHome != nil,
+                          movedPointer: movedPointer, backgrounded: target != nil)
+  }
+
+  /// Who was in front before a raise took it from them, if one did. Only a
+  /// focus change WE caused is undone; the one a click causes is what a click
+  /// is supposed to do, and undoing that pulls the app out from under its own
+  /// work — measured 2026-09-11, three drags each handed focus away from the
+  /// app being drawn in, and the run fell apart between them.
+  private var frontBeforeRaise: NSRunningApplication?
+
+  public func prepareForPointer(app: String) throws -> Bool {
+    let a = try resolve(app)
+    // Nothing to prepare when the click can be addressed at the window: that
+    // route needs no raise, no Space switch and no pointer. Whether it is
+    // usable for a given ELEMENT is decided in pointer(), which raises there if
+    // it turns out the window cannot be addressed after all.
+    if Self.backgroundPointer, BackgroundPointer.available { frontBeforeRaise = nil; return false }
+    func visible() -> Bool {
+      guard parkedWindow(app: app) == nil, let wins = try? windows(app: app) else { return false }
+      return wins.contains { $0.onSpace }
+    }
+    if visible() { frontBeforeRaise = nil; return false }
+    frontBeforeRaise = NSWorkspace.shared.frontmostApplication
+    try? raise(app: app, windowId: nil)
+    let deadline = Date().addingTimeInterval(2.0)
+    while !visible(), Date() < deadline { usleep(80_000) }
+    // Becoming listable is not the same as having arrived. A Space switch
+    // animates, and until it finishes the frames accessibility reports are not
+    // yet where the window is drawn: measured 2026-09-11, a click aimed
+    // straight after the switch landed on the neighbouring control. Wait for
+    // the app to actually be in front, then give the animation a beat.
+    let settleBy = Date().addingTimeInterval(2.0)
+    while NSWorkspace.shared.frontmostApplication?.processIdentifier != a.processIdentifier, Date() < settleBy {
+      usleep(80_000)
+    }
+    usleep(Self.spaceSettleUs)
+    if let parked = parkedWindow(app: app) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app)'s window is parked by Stage Manager at \(parked.actual.w)x\(parked.actual.h) even after being brought forward, so it is not where these coordinates are on screen and a click would land on whatever is. Do this with the keyboard and menus instead, or ask the user to un-park the window.")
+    }
+    if let wins = try? windows(app: app), wins.allSatisfy({ !$0.onSpace }) {
+      throw BridgeError.actionFailed("\(a.localizedName ?? app) still has no window on this Space after being brought forward, so a click at these coordinates would land on another app. Use the keyboard and menus instead.")
+    }
+    return true
   }
 
   public func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation {
@@ -488,6 +699,28 @@ public final class LiveBackend: Backend {
     }
   }
 
+  /// A menu command's key equivalent, in the form `pressKey` understands, or
+  /// nil when it has none this bridge can send.
+  ///
+  /// Worth having because a shortcut posted to the pid reaches an app wherever
+  /// it is, while pressing the menu item itself needs the app in front. At
+  /// least one modifier is required: a bare letter posted at a background app
+  /// is indistinguishable from typing into whatever it has focused.
+  static func shortcutKey(of item: AXElement) -> (key: String, modifiers: [String])? {
+    guard let ch = Self.menuString(item, "AXMenuItemCmdChar"), ch.count == 1 else { return nil }
+    var modsRef: CFTypeRef?
+    let mods = (AXUIElementCopyAttributeValue(item.ref, "AXMenuItemCmdModifiers" as CFString, &modsRef) == .success ? modsRef as? Int : nil) ?? 0
+    var m: [String] = []
+    if mods & 8 == 0 { m.append("command") }   // bit 3 set means NO command key
+    if mods & 1 != 0 { m.append("shift") }
+    if mods & 2 != 0 { m.append("option") }
+    if mods & 4 != 0 { m.append("control") }
+    guard !m.isEmpty else { return nil }
+    let key = ch.lowercased()
+    guard Self.keyCodes[key] != nil || Self.letterCodes[key] != nil else { return nil }
+    return (key, m)
+  }
+
   private static func entry(_ item: AXElement, _ path: [String]) -> MenuEntry {
     var shortcut: String? = nil
     if let ch = Self.menuString(item, "AXMenuItemCmdChar"), !ch.isEmpty {
@@ -522,10 +755,25 @@ public final class LiveBackend: Backend {
       guard let next = named(cur) else { throw BridgeError.actionFailed("no menu item \"\(title)\" under \(path.joined(separator: " > "))") }
       cur = next
     }
+    // A command with a key equivalent does not need the app in front at all:
+    // the shortcut posted to the pid reaches it wherever it is. Measured
+    // 2026-09-14 on Figma from another Space with a different app frontmost —
+    // command-backslash hid its interface and showed it again, 282 elements to
+    // 48 and back, and the frontmost app never changed. This is the difference
+    // between a drawing run that interrupts the user twice a minute and one
+    // they can ignore.
+    var enabledRef: CFTypeRef?
+    let enabled = (AXUIElementCopyAttributeValue(cur.ref, kAXEnabledAttribute as CFString, &enabledRef) == .success
+                   ? enabledRef as? Bool : nil) ?? true
+    if enabled, let sc = Self.shortcutKey(of: cur) {
+      try pressKey(app: app, key: sc.key, modifiers: sc.modifiers, focusId: nil)
+      return
+    }
     try keepingFront(keepFront) {
-      // Measured 2026-09-09: pressing a closed item while another app is
-      // frontmost returns success and changes nothing — an Electron menu
-      // action goes to the focused window, and there is none. Active, it works.
+      // No key equivalent, so the item itself has to be pressed — and measured
+      // 2026-09-09: pressing a closed item while another app is frontmost
+      // returns success and changes nothing — an Electron menu action goes to
+      // the focused window, and there is none. Active, it works.
       if !a.isActive {
         a.activate(options: [])
         usleep(350_000)
@@ -591,11 +839,80 @@ public final class LiveBackend: Backend {
   /// build a path from clicks drop points sent faster than they redraw;
   /// measured at 70ms in the comparison run.
   static let pointerStepUs: UInt32 = 70_000
+  /// The one route that delivers a click at a point WITHOUT moving the user's
+  /// pointer: its second argument is literally "update the mouse cursor
+  /// position", and passing false leaves the cursor where the user left it
+  /// while the click still lands and still reaches a system event tap.
+  ///
+  /// Measured 2026-09-11 against the comparison agent, whose clicks arrived at
+  /// a test app while the real pointer sat 2,400 points away on another
+  /// display — and against every alternative: posting to the HID or session
+  /// tap delivers but drags the pointer; posting to the annotated tap leaves
+  /// the pointer alone but is never delivered; warping there and back is
+  /// visible to a 10ms sampler and reads as a pointer that WAS there. This is
+  /// the only combination that matches. Deprecated since 10.6, still the only
+  /// way, so it is resolved rather than linked and the old route stays as a
+  /// fallback.
+  /// Read once: the switch is for a whole run, not per call.
+  static let quietPointer = QuietPointer.enabled(ProcessInfo.processInfo.environment)
+  static let backgroundPointer = BackgroundPointerRoute.enabled(ProcessInfo.processInfo.environment)
+
+  /// The window an element sits in: its window-server id, and where
+  /// accessibility says its top-left corner is.
+  ///
+  /// The origin has to come from accessibility. A screenshot will not do: for a
+  /// window on another Space the window server may hold only a small skewed
+  /// thumbnail, and a point worked out from that is wrong by whatever the
+  /// thumbnail's scale happens to be — measured 138x157 standing in for
+  /// 1249x900, so by a factor of nine.
+  static func windowTarget(of el: AXElement) -> (id: CGWindowID, origin: CGPoint)? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(el.ref, kAXWindowAttribute as CFString, &v) == .success,
+          let raw = v, CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+    let window = AXElement(ref: unsafeBitCast(raw, to: AXUIElement.self))
+    guard let id = RemoteToken.windowId(of: window.ref), id != 0,
+          let frame = frame(of: window) else { return nil }
+    return (id, frame.origin)
+  }
+
+  /// A screen point in the window's own coordinates, which is what an event
+  /// addressed at a window is aimed with.
+  static func local(_ screen: CGPoint, _ origin: CGPoint) -> CGPoint {
+    CGPoint(x: screen.x - origin.x, y: screen.y - origin.y)
+  }
+
+  private typealias PostMouseFn = @convention(c) (CGPoint, Int32, UInt32, Int32) -> Int32
+  private static let postMouse: PostMouseFn? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGPostMouseEvent")
+    .map { unsafeBitCast($0, to: PostMouseFn.self) }
+
+  /// After a Space switch, before trusting a frame. The switch animates and
+  /// accessibility reports the destination frame before the compositor gets
+  /// there; measured 2026-09-11, aiming inside that window cost one wrong
+  /// control. Paid only when the app actually had to be brought forward.
+  static let spaceSettleUs: UInt32 = 500_000
+
   /// Between the move, press and release that make one click of that path.
   /// A human click holds the button for around 80ms and no app requires it;
   /// 12ms keeps the three events in order on a busy renderer while the
   /// between-point cadence above stays the pace the app sees.
   static let pointerWithinClickUs: UInt32 = 12_000
+
+  /// The element's frame once two reads a beat apart agree on it. Costs one
+  /// beat on a window that is not moving, which a path of clicks never notices.
+  static func settledFrame(of el: AXElement) -> CGRect? {
+    guard var last = frame(of: el) else { return nil }
+    let deadline = Date().addingTimeInterval(1.5)
+    while Date() < deadline {
+      usleep(frameSettleUs)
+      guard let now = frame(of: el) else { return last }
+      if now == last { return now }
+      last = now
+    }
+    return last
+  }
+
+  /// Between the two frame reads above.
+  static let frameSettleUs: UInt32 = 120_000
 
   static func frame(of el: AXElement) -> CGRect? {
     var posRef: CFTypeRef?
@@ -780,6 +1097,62 @@ public final class LiveBackend: Backend {
     if let str = v as? String { return str }
     if let n = v as? NSNumber { return n.stringValue }
     return nil
+  }
+
+  public func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool? {
+    let (a, el) = try element(app, id)
+    let mark = AXNotifications.shared.mark()
+    guard AXNotifications.shared.watch(pid: a.processIdentifier, element: el.ref,
+                                       notification: kAXValueChangedNotification as String) else { return nil }
+    return AXNotifications.shared.await(element: el.ref,
+                                        notification: kAXValueChangedNotification as String,
+                                        since: mark, timeout: timeout)
+  }
+
+  public func valueSettable(app: String, id: Int) throws -> Bool {
+    let (_, el) = try element(app, id)
+    var settable: DarwinBoolean = false
+    let err = AXUIElementIsAttributeSettable(el.ref, kAXValueAttribute as CFString, &settable)
+    return err == .success && settable.boolValue
+  }
+
+  public func selectText(app: String, id: Int, text: String?) throws -> Int {
+    let (_, el) = try element(app, id)
+    guard let whole = try value(app: app, id: id) else {
+      throw BridgeError.actionFailed("Element \(id) exposes no text to select.")
+    }
+    // Offsets are UTF-16: AXSelectedTextRange counts the way the text system
+    // counts, and a Swift Character can be several of those. An emoji or an
+    // accented letter earlier in the field would otherwise shift the range.
+    let units = Array(whole.utf16)
+    var start = 0
+    // Sized from the value as read. An over-long range was tried, to make
+    // selecting "everything" independent of a possibly-stale length — Chromium
+    // does not honour it, and the typing appended anyway.
+    var length = units.count
+    if let want = text, !want.isEmpty {
+      let needle = Array(want.utf16)
+      guard needle.count <= units.count else {
+        throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.")
+      }
+      var found: Int? = nil
+      for i in 0...(units.count - needle.count) where Array(units[i..<(i + needle.count)]) == needle { found = i; break }
+      guard let at = found else {
+        throw BridgeError.actionFailed("Element \(id) does not contain that text; nothing was selected.")
+      }
+      start = at
+      length = needle.count
+    }
+    AXUIElementSetAttributeValue(el.ref, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+    var range = CFRange(location: start, length: length)
+    guard let value = AXValueCreate(.cfRange, &range) else {
+      throw BridgeError.actionFailed("Could not build a selection range for element \(id).")
+    }
+    let err = AXUIElementSetAttributeValue(el.ref, kAXSelectedTextRangeAttribute as CFString, value)
+    guard err == .success else {
+      throw BridgeError.actionFailed("Element \(id) refused a text selection (AXError \(err.rawValue)); it may not be a text control.")
+    }
+    return length
   }
 
   public func screenshot(app: String, windowId: Int?) throws -> WindowShot {

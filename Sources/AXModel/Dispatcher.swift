@@ -5,7 +5,7 @@ import Foundation
 /// never saw. Foundation is imported here for JSONSerialization only; the
 /// rest of AXModel stays framework-free.
 public final class Dispatcher {
-  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu"]
+  public static let methods = ["hello", "apps", "windows", "tree", "find", "act", "setValue", "selectText", "key", "raise", "icon", "launch", "scroll", "screenshot", "pointer", "type", "values", "fields", "menus", "menu", "findUnique", "awaitChange", "verify"]
   public static let keys = ["return", "tab", "escape", "space", "delete", "up", "down", "left", "right"]
   public static let modifiers = ["command", "shift", "option", "control"]
   /// How many points one pointer call may carry. Without `hold` a path is a
@@ -66,6 +66,13 @@ public final class Dispatcher {
   /// between consecutive reads, each forcing the app to ask for the whole
   /// tree (~9KB), and the two compactions that followed cost nine minutes.
   private var baselines: [String: [String: Snapshot]] = [:]
+  /// How many snapshots of this app have been stored. Provenance for an id:
+  /// which read it came from. NOT a validity gate — an id from generation 3
+  /// used at generation 9 is fine if it still names the same control, and
+  /// resolveId is what decides that. The number exists so a caller can tell
+  /// how stale its handle MIGHT be, and so a code-mode kernel can notice that
+  /// the ground moved under a variable it has been holding.
+  private var generations: [String: Int] = [:]
   /// The most recent snapshot of each app under any filter: what a stale id
   /// is re-found against, and where an element's action list is looked up.
   private var latest: [String: Snapshot] = [:]
@@ -132,7 +139,14 @@ public final class Dispatcher {
       let snap = try backend.snapshot(app: app, options: opts)
       defer { store(app, opts, snap) }
       var out: [String: Any] = ["count": snap.nodes.count, "truncated": snap.truncated]
-      if let prev = baseline(app, opts), !((p["full"] as? Bool) ?? false) {
+      let gen = (generations[app] ?? 0) + 1 // this read is the one being stored
+      out["generation"] = gen
+      if (p["structured"] as? Bool) == true {
+        // Data instead of the lines, never as well as them. A caller asking
+        // for this is a script, and a script does not read prose; sending
+        // both would bill the tree twice for one read.
+        out["elements"] = snap.nodes.map { Formatter.row($0, generation: gen, geometry: geometry) }
+      } else if let prev = baseline(app, opts), !((p["full"] as? Bool) ?? false) {
         out["diff"] = Differ.render(from: prev, to: snap, geometry: geometry)
       } else {
         out["tree"] = Formatter.render(snap, geometry: geometry)
@@ -155,9 +169,131 @@ public final class Dispatcher {
         (role == nil || n.attributes.role == role!) &&
         (needle == nil || (n.attributes.title ?? "").lowercased().contains(needle!) || (n.attributes.value ?? "").lowercased().contains(needle!))
       }
-      var out: [String: Any] = ["matches": hits.map { Formatter.line($0, geometry: geometry) }, "count": hits.count]
+      let gen = generations[app] ?? 0 // find stored its snapshot above
+      var out: [String: Any] = ["count": hits.count, "generation": gen]
+      if (p["structured"] as? Bool) == true {
+        out["elements"] = hits.map { Formatter.row($0, generation: gen, geometry: geometry) }
+      } else {
+        out["matches"] = hits.map { Formatter.line($0, geometry: geometry) }
+      }
       try annotateSpaces(&out, app: app, windowsHere: { try self.backend.windows(app: app).count })
       return out
+    case "awaitChange":
+      // Diagnostic and, where an app posts them, the one trustworthy
+      // confirmation available: the app saying it changed something rather
+      // than us asking what it holds.
+      let waitId = try resolveId(app, try int(p, "id"))
+      let ms = (p["timeoutMs"] as? Int) ?? 1500
+      let heard = try backend.awaitValueChange(app: app, id: waitId, timeout: Double(ms) / 1000)
+      guard let heard else {
+        return ["ok": true, "observable": false,
+                "note": "This element cannot be observed, so a notification will never arrive for it. Judge the action another way."]
+      }
+      return ["ok": true, "observable": true, "changed": heard,
+              "note": heard ? "The app posted a value change for element \(waitId)."
+                            : "The app posted nothing for element \(waitId) within \(ms)ms."]
+    case "verify":
+      // The caller says what success looks like; this says whether that is
+      // true. Three values, because two would be a lie: `unknown` is the
+      // bridge admitting it cannot prove the thing either way, and it is NOT
+      // success. A caller that treats unknown as yes has learned nothing and
+      // will act on it.
+      //
+      // Deliberately separate from an action's `confidence`. That is this
+      // bridge guessing at meaning from a diff — useful, weak, and ours to
+      // infer. This is a postcondition the CALLER defined, which is the only
+      // kind that can be checked without inventing what the task meant.
+      //
+      // It polls fresh snapshots rather than acting again. A lagging tree is
+      // answered by looking again; it is never answered by pressing again.
+      let vSel = try selector(p)
+      guard !vSel.isEmpty else {
+        throw BridgeError.badParams("Describe the element to check: role, label, value, action, enabled, selected.")
+      }
+      let expect = (p["expect"] as? [String: Any]) ?? [:]
+      let wantExists = (expect["exists"] as? Bool) ?? true
+      let timeoutMs = min(max((p["timeoutMs"] as? Int) ?? 1500, 0), 15_000)
+      let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
+      var lastNote = "Nothing matching that description was found."
+      while true {
+        let snap = try backend.snapshot(app: app, options: options(p))
+        switch SelectorEngine.resolve(snap.nodes, vSel) {
+        case .many(let all):
+          // Waiting cannot fix this: the same several come back every time.
+          return ["ok": true, "verdict": "unknown", "matched": all.count,
+                  "note": "\(all.count) elements match that description, so there is no saying which one the expectation was about. unknown is NOT success. Narrow it — a role, a within, the exact label — and ask again."]
+        case .none:
+          if !wantExists {
+            return ["ok": true, "verdict": "satisfied",
+                    "note": "Nothing matches that description, which is what was expected."]
+          }
+          lastNote = "Nothing matches that description."
+        case .one(let n):
+          if !wantExists {
+            lastNote = "Element \(n.id) still matches that description; it was expected to be gone."
+            break
+          }
+          var met = true
+          var unprovable: String? = nil
+          for (key, want) in expect where key != "exists" {
+            switch try check(app, n, key, want) {
+            case .met: continue
+            case .notMet: met = false
+            case .unprovable(let why): unprovable = why
+            }
+            if unprovable != nil { break }
+          }
+          if let why = unprovable {
+            return ["ok": true, "verdict": "unknown", "id": n.id,
+                    "note": why + " unknown is NOT success: do not treat this as done, and do not repeat the action to find out."]
+          }
+          if met {
+            return ["ok": true, "verdict": "satisfied", "id": n.id,
+                    "note": "Element \(n.id) matches, and every expectation holds."]
+          }
+          lastNote = "Element \(n.id) matches the description, but the expected state is not the one it reports."
+        }
+        if Date() >= deadline { break }
+        Thread.sleep(forTimeInterval: 0.1)
+      }
+      return ["ok": true, "verdict": "unsatisfied",
+              "note": lastNote + " Still so after \(timeoutMs)ms of looking again. This is a real answer, not a timeout: the expected state did not arrive."]
+    case "findUnique":
+      // Resolve ONE element from a description, or refuse. The refusal is the
+      // feature: a near-miss that quietly resolves acts on a control the
+      // caller never saw and reports success.
+      //
+      // This read does NOT store a baseline. Every other read does, because a
+      // diff has to be measured from somewhere — but a selector is meant to be
+      // resolved immediately before acting, so if it re-baselined, the action
+      // that followed would measure its diff from a snapshot taken moments
+      // earlier and report "(no changes)" for work that happened. Resolution
+      // is a question, not a step.
+      let sel = try selector(p)
+      guard !sel.isEmpty else {
+        throw BridgeError.badParams("Describe the element: role, label, value, action, enabled, selected. An empty selector matches everything.")
+      }
+      let snap = try backend.snapshot(app: app, options: options(p))
+      let gen = generations[app] ?? 0
+      switch SelectorEngine.resolve(snap.nodes, sel) {
+      case .one(let n):
+        var out = Formatter.row(n, generation: gen, geometry: true)
+        out["ok"] = true
+        return out
+      case .none(let near):
+        var out: [String: Any] = ["ok": false, "error": "not_found", "count": 0,
+                                  "near": near.map { Formatter.row($0, generation: gen, geometry: false) }]
+        out["note"] = near.isEmpty
+          ? "Nothing in \(app) matches that. Read the app: the element may not be on screen yet."
+          : "Nothing matches all of it. The elements below match all but one part — correct the selector rather than guessing again."
+        return out
+      case .many(let hits):
+        return ["ok": false, "error": "ambiguous", "count": hits.count,
+                "matches": hits.prefix(Self.maxAmbiguous).map { Formatter.row($0, generation: gen, geometry: true) },
+                "note": "\(hits.count) elements match. Nothing was chosen, because choosing would act on one the caller never saw. "
+                      + "Reading again will NOT resolve this — add role, action, or within (an ancestor's id) to say which you meant. "
+                      + "Their frames are included: they are what usually tells them apart."]
+      }
     case "menus":
       // The app's commands by name, from the CLOSED menu bar. Measured
       // 2026-09-09: asked to hide the panels before drawing, a caller pressed
@@ -207,7 +343,13 @@ public final class Dispatcher {
       let id = try resolveId(app, asked)
       try offers(app, id, action)
       let key = Self.actionKey("act", id: id, detail: action)
-      try repeatCheck(app, key)
+      // Stepping is exempt, for the same reason keys are: the whole way to
+      // reach a value on an incrementor is to send the SAME action again and
+      // again, and a guard against repeating an action that changed nothing
+      // refuses the second step of every climb. Measured against a stepper:
+      // increment, increment, increment came back ok / action_failed / ok,
+      // and the failure in the middle was ours.
+      if !Self.stepping.contains(action) { try repeatCheck(app, key) }
       try backend.perform(app: app, id: id, action: action, keepFront: (p["keepFront"] as? Bool) ?? false)
       return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
     case "setValue":
@@ -215,6 +357,15 @@ public final class Dispatcher {
       let id = try resolveId(app, asked)
       let key = Self.actionKey("setValue", id: id, detail: value)
       try repeatCheck(app, key)
+      // Both sides read live, from the same source, at the moments either side
+      // of the write. Taking "before" from the snapshot already in memory
+      // would save one IPC and compare two different sources — a snapshot
+      // taken at the last read against an attribute read taken now — which
+      // disagree whenever the snapshot is stale, and then report a change that
+      // did not happen or miss one that did. The saving is not worth it: this
+      // action already pays a settle poll measured in seconds, and an
+      // attribute read is noise beside it.
+      let valueBefore = (try? backend.value(app: app, id: id)) ?? nil
       try backend.setValue(app: app, id: id, value: value, keepFront: (p["keepFront"] as? Bool) ?? false)
       // Read it back unless told not to. This throws BEFORE afterAction, so the
       // diff baseline is left where it was and the next read still shows what
@@ -226,7 +377,83 @@ public final class Dispatcher {
       // honest only where a write is actually observable — a `text field`,
       // which Figma does honour.
       if (p["verify"] as? Bool) == true { try verifyValue(app, id: id, wanted: value) }
-      return try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key)
+      // If the write did not take, do what a person does rather than handing
+      // the caller a dead end. Measured: a value write lands on text fields
+      // and is silently discarded by steppers, native selects and date
+      // fields — all of which take keystrokes perfectly well.
+      //
+      // Escalation is decided by what HAPPENED, not by the control's role. A
+      // role list is wrong on the first app nobody tested; an outcome is right
+      // everywhere, and costs nothing when the direct write works.
+      //
+      // Safe to run even when the write actually landed and merely read stale,
+      // because selecting before typing REPLACES: the field ends holding the
+      // value either way, never the value twice.
+      // Ask twice before escalating. The first read can report the value from
+      // BEFORE the write — measured on a browser text area, stale for a few
+      // hundred milliseconds — and escalating on that types the value on top
+      // of itself: "Naveen" became "NaveenNaveen", "12" became "1212". The
+      // safety of select-then-type does not survive a stale read, because the
+      // SELECTION is sized from the same stale value and selects nothing.
+      //
+      // Paid only when the first read says the write failed, and the wait is
+      // what tells a slow write from a dead one.
+      func landed() -> Bool {
+        if ((try? backend.value(app: app, id: id)) ?? nil) == value { return true }
+        Thread.sleep(forTimeInterval: Self.staleRecheck)
+        return ((try? backend.value(app: app, id: id)) ?? nil) == value
+      }
+      // OPT-IN, and off by default. Shipped default-on and measured wrong on
+      // the first real run: it fired on writes that had LANDED and typed the
+      // value on top of itself, leaving "NaveenNaveen" and an email address
+      // written three times over. Silent failure is recoverable — the caller
+      // tries another route. Corruption is not: the caller has to notice it,
+      // and then repair a field it thought it had set.
+      //
+      // The escalation itself is right, and fixes controls nothing else
+      // reaches — Country and every part of a date, measured. What cannot be
+      // made safe is DECIDING to escalate, because that needs to tell "the
+      // write landed and the read is stale" from "the write was discarded",
+      // and both look identical through the accessibility layer. Waiting
+      // longer does not separate them; neither does selecting an over-long
+      // range, which Chromium ignores.
+      //
+      // So it waits for a verification source outside AX. Callers that know a
+      // control refuses writes can ask for it by name today.
+      var route = "value"
+      if !landed(), (p["escalate"] as? Bool) == true {
+        _ = try? backend.selectText(app: app, id: id, text: nil)
+        if (try? backend.typeText(app: app, text: value, focusId: id)) != nil { route = "typed" }
+      }
+      var out = try afterAction(app, p, refound: asked == id ? nil : (asked, id), actionKey: key,
+                                wrote: (valueBefore, id, value))
+      if route != "value", var dict = out as? [String: Any] {
+        dict["route"] = route
+        dict["routeNote"] = "The value write was accepted and did nothing, so this was typed in instead. "
+          + "That is the route this control takes; use it directly next time rather than writing the value first."
+        out = dict
+      }
+      return out
+    case "selectText":
+      // Select inside a named element, so the type that follows REPLACES
+      // rather than appends. The alternative in use until now was command+a,
+      // which is scoped to focus rather than to the element: when focus was
+      // not where the caller believed, it selected the document. This cannot,
+      // because the element is named.
+      //
+      // No settle and no diff: selecting changes nothing an app reports, so
+      // waiting for a reaction would buy a guaranteed "(no changes)" and the
+      // seconds it takes to conclude that.
+      let selAsked = try int(p, "id")
+      let selId = try resolveId(app, selAsked)
+      let wanted = p["text"] as? String
+      let selected = try backend.selectText(app: app, id: selId, text: wanted)
+      var out: [String: Any] = ["ok": true, "selected": selected]
+      if selAsked != selId { out["refoundId"] = selId }
+      out["note"] = selected == 0
+        ? "Nothing was selected: the control is empty, so there is nothing to replace — type into it directly."
+        : "\(selected) character(s) are selected in element \(selId). Typing now REPLACES them; there is no need to clear the field first."
+      return out
     case "key":
       let key = try string(p, "key").lowercased()
       guard Self.keyAllowed(key) else {
@@ -296,8 +523,32 @@ public final class Dispatcher {
           throw BridgeError.actionFailed("Keyboard focus is on \(what), which does not take typed text: the characters would reach the app as shortcuts. Nothing was typed. Pass id to aim at a field, or click the field first and check that it took focus.")
         }
       }
+      // Read the target before and after, when there is one. Typing is a
+      // stream of key events and the stream can be lossy: measured, one call
+      // asking for 222 characters put 217 into the field and reported success,
+      // and the five that went missing were the end of a sentence. Nothing
+      // said so. A caller that cannot see the shortfall sends the next step
+      // against text it does not have.
+      let typeBefore = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
       try backend.typeText(app: app, text: text, focusId: typeFocus)
-      return try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!))
+      var out = try afterAction(app, p, refound: typeAsked == typeFocus ? nil : (typeAsked!, typeFocus!),
+                                wrote: typeFocus == nil ? nil : (typeBefore, typeFocus, nil))
+      let typeAfter = typeFocus.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+      // How much of it arrived, when that is knowable and short of what was
+      // asked. Silent on an exact landing: a caller does not need telling that
+      // what it sent is what is there.
+      if var dict = out as? [String: Any], let after = typeAfter {
+        let gained = after.count - (typeBefore?.count ?? 0)
+        if gained > 0 && gained < text.count {
+          dict["typedChars"] = gained
+          dict["askedChars"] = text.count
+          dict["diff"] = "Only \(gained) of the \(text.count) characters sent arrived in the target; the rest were dropped on the way. "
+            + "Check what the field holds before sending anything that depends on it.\n"
+            + ((dict["diff"] as? String) ?? "")
+          out = dict
+        }
+      }
+      return out
     case "raise":
       // Measured over six runs: a press does nothing because the window is
       // parked, and the caller raises to fix it. That cannot work. Raising
@@ -424,6 +675,10 @@ public final class Dispatcher {
       // measured 2026-09-09, a floating toolbar sat over the bottom of a
       // drawing surface and the trace's last dozen clicks pressed its buttons.
       // Checked before anything is posted, so a bad point costs nothing.
+      // Bring the window to where its coordinates are BEFORE asking what is
+      // under them: a window on another Space answers the hit test with
+      // whatever is in front of it, which used to read as "the element moved".
+      let raisedForPointer = try backend.prepareForPointer(app: app)
       let toCheck = hold ? Array(aim.prefix(1)) : aim
       for (i, pt) in toCheck.enumerated() {
         let rel = try backend.pointerHit(app: app, id: anchor, point: pt)
@@ -442,6 +697,23 @@ public final class Dispatcher {
       var out = (try afterAction(app, p)) as? [String: Any] ?? [:]
       out["at"] = outcome.landed.map { ["x": Int($0.x), "y": Int($0.y)] }
       var notes: [String] = []
+      // Brought forward, and the pointer handed back. Both are things the user
+      // sees happen, so the caller is told rather than left to infer them.
+      if raisedForPointer {
+        out["raised"] = true
+        notes.append("Brought \(app) forward first: pointer input is posted at real screen coordinates, so its window had to be on this Space. Reading and pressing still work in the background; only the pointer needs this.")
+      }
+      if outcome.backgrounded {
+        out["backgrounded"] = true
+        out["pointerUntouched"] = true
+        notes.append("Delivered to the window itself: \(app) was not brought forward, its window stayed on whatever Space it was on, and the user's pointer never moved.")
+      } else if !outcome.movedPointer {
+        out["pointerUntouched"] = true
+        notes.append("The user's pointer was not moved: the clicks were delivered to the window where they landed, so whatever they were doing with the mouse was not interrupted.")
+      } else if outcome.pointerReturned {
+        out["pointerReturned"] = true
+        notes.append("The pointer was borrowed for this and put back where the user had left it.")
+      }
       // A control appeared under the path AFTER the up-front check passed —
       // a floating toolbar the app raises once drawing begins. The clicks
       // stopped in front of it; say where the drawing is left off.
@@ -471,7 +743,12 @@ public final class Dispatcher {
       return ["values": raw.map { id -> [String: Any] in
         let attrs = idMemory[app]?[id]
         let value = (try? backend.value(app: app, id: id)) ?? nil
-        return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(), "value": value ?? NSNull()]
+        // Whether the control says its value can be written. Asked here rather
+        // than on every element of every tree: it is one more call per id, and
+        // only ids a caller named are worth paying it for.
+        let settable = (try? backend.valueSettable(app: app, id: id)) ?? false
+        return ["id": id, "role": attrs?.role ?? NSNull(), "title": attrs?.title ?? NSNull(),
+                "value": value ?? NSNull(), "valueSettable": settable]
       }]
     case "fields":
       // The settable controls in the latest snapshot, with ids: what a caller
@@ -546,8 +823,13 @@ public final class Dispatcher {
   /// settle, but which the bridge watches anyway (a delete outside a field).
   /// The diff is that step's own before/after and the baseline is NOT moved.
   /// `nameRemoved`: name the removed nodes, for a step whose job is removing.
+  /// What a write was supposed to do, so the reply can say whether it did.
+  /// `wanted` nil means any change counts — typing appends, so "it equals what
+  /// I sent" is the wrong question for it.
+  typealias Wrote = (before: String?, id: Int?, wanted: String?)
+
   private func afterAction(_ app: String, _ p: [String: Any], refound: (from: Int, to: Int)? = nil, actionKey: String? = nil, closing: Bool = false,
-                           watch: Snapshot? = nil, nameRemoved: Bool = false) throws -> Any {
+                           watch: Snapshot? = nil, nameRemoved: Bool = false, wrote: Wrote? = nil) throws -> Any {
     // `"settle": false` means the caller is mid-sequence and does not want a
     // diff for this step: do the action and return. Measured on a Figma icon
     // built out of inspector fields — 372 actions, 253 seconds of settle
@@ -556,7 +838,21 @@ public final class Dispatcher {
     // the end. The baseline is deliberately left alone, so that closing read
     // measures the whole sequence rather than only its last step.
     if (p["settle"] as? Bool) == false && watch == nil {
-      return ["ok": true, "settled": false]
+      var early: [String: Any] = ["ok": true, "settled": false]
+      // A step that does not settle has no diff, so it cannot reach the
+      // verdict below — which needs BOTH signals. It can still report the one
+      // it has. This matters more than the standalone case it was written for:
+      // measured on a form run, every single write went through a batch, so
+      // eleven writes produced no verdict at all while the check passed its
+      // tests against the path almost nothing uses.
+      // No settle here, so no chance to let a stale value catch up: this is
+      // the one signal a non-settling step has, and it is reported as a fact
+      // for the batch's closing diff to judge, never as a verdict on its own.
+      let now = wrote?.id.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+      if let w = wrote, w.before == now, w.wanted.map({ now != $0 }) ?? true {
+        early["valueUnchanged"] = true
+      }
+      return early
     }
     // Snapshot AFTER the app has had a chance to react, not the instant the
     // action returns. Measured: pressing return in Maps' search field produced
@@ -624,6 +920,7 @@ public final class Dispatcher {
       }
       waitedMs = Int(Date().timeIntervalSince(started) * 1000)
     }
+    var out0Confidence: Confidence? = nil
     let names = nameRemoved ? Self.namedRemovals : 0
     if let watch {
       let own = Differ.render(from: watch, to: snap, geometry: false, nameRemoved: names)
@@ -638,8 +935,82 @@ public final class Dispatcher {
       diff = (closing ? "The open menu closed and nothing else changed.\n"
                       : "Only the menu bar changed: the action dismissed an open menu and reached nothing else. Send it again now that the menu is closed.\n") + diff
     }
+    // What APPEARED or VANISHED besides the thing this action aimed at —
+    // computed here,
+    // while the baseline is still the snapshot from BEFORE the action. A line
+    // below replaces it; reading it after that compares the new snapshot with
+    // itself and finds nothing, which is how this first shipped.
+    if let prev = baseline(app, opts) {
+      let moved = Differ.structuralIds(from: prev, to: snap)
+      let target = wrote?.id ?? (p["id"] as? Int)
+      out0Confidence = (target.map { moved.subtracting([$0]) } ?? moved).isEmpty ? nil : .confirmed
+    }
     store(app, opts, snap)
+    // A write that changed the value it was aimed at, or changed anything in
+    // the tree, did something. One that changed NEITHER did nothing, and until
+    // now said "ok" anyway — measured on a backgrounded web view, where a
+    // value write returned success, the field stayed empty, and the control
+    // that would have acted on it stayed disabled.
+    //
+    // Reported, never refused. Refusing was tried and measured wrong the same
+    // day: some controls ignore a value write and keep reporting the old value
+    // while the change lands elsewhere, so a refusal stopped work that had
+    // succeeded. Saying what happened costs a caller nothing and stops the one
+    // failure the caller cannot otherwise see.
+    // The "after" is read HERE, once the settle poll has finished, not the
+    // instant the write returned. Measured on a Chromium text area: a value
+    // overwritten while it already held text read back as the PREVIOUS value
+    // for hundreds of milliseconds, so an immediate read compares stale
+    // against stale, finds them equal, and calls a write that landed quiet.
+    // Whatever patience the diff needed, the value needed too.
+    var quiet = false
+    let after = wrote?.id.flatMap { (try? backend.value(app: app, id: $0)) ?? nil }
+    if let w = wrote, diff == "(no changes)", w.before == after, w.wanted.map({ after != $0 }) ?? true {
+      quiet = true
+      let reads = (after ?? "").isEmpty ? "is still empty" : "still reads what it did before"
+      diff = "This wrote nothing that can be observed: the target \(reads), and no part of the tree changed. "
+        + "The write was accepted by the accessibility API and had no effect — which happens when the control is not taking input, "
+        + "not because the value was wrong. Press the control, then selectText on it, then type — sending the same write again does the same nothing.\n"
+        + diff
+    }
     var out: [String: Any] = ["ok": true, "diff": diff, "waitedMs": waitedMs]
+    if quiet { out["wroteNothing"] = true }
+    // Stated on every action, not only on writes: a caller that is told how
+    // much to believe can decide, and one that is told nothing assumes.
+    let confidence: Confidence = out0Confidence ?? (quiet ? .quiet : .unverified)
+    out["confidence"] = confidence.rawValue
+    if confidence == .unverified {
+      // Say which blind spot applies. An interactive-only read cannot see an
+      // app answering with TEXT — measured: pressing a form's save button
+      // rendered its result and the read reported nothing changed, because the
+      // result is not an interactive element. A caller told only "unverified"
+      // would retry; one told why can look properly.
+      out["confidenceNote"] = opts.interactiveOnly
+        ? "Nothing that this read can see moved. It excluded non-interactive content, so an app answering with TEXT — a result, a status line, a message — is invisible to it. "
+          + "If this action should have produced one, read again with interactive:false before deciding it failed. Do NOT send the action again."
+        : "Nothing moved but the thing this aimed at, so the only evidence is the accessibility layer's account of its own write. "
+          + "That account can lag. Treat this as done unless something later contradicts it, and do NOT send it again to be sure."
+    }
+    // A toggle is the one control where trying again is worse than doing
+    // nothing. If the first press landed and only the read lagged, a second
+    // press CLOSES what the first opened. Measured 2026-09-18 on an accordion:
+    // the rows vanished, and the run read that as the controls having stopped
+    // working — it gave up with one of four items done, having undone its own
+    // success.
+    //
+    // So when nothing was confirmed AND the target is one of these, say it,
+    // rather than leaving the caller to draw the obvious wrong conclusion. The
+    // bridge still does not retry anything by itself: it says what the control
+    // is and what to check. Costs one attribute read, only on the path where
+    // nothing was proven.
+    if confidence != .confirmed, let tid = wrote?.id ?? (p["id"] as? Int) {
+      let role = snap.nodes.first(where: { $0.id == tid })?.attributes.role
+      if isToggle(app, tid, role: role) {
+        out["toggle"] = true
+        out["toggleNote"] = "Element \(tid) has an open/closed state, so sending this again may UNDO what just happened rather than repeat it. "
+          + "Do not press it again to be sure. Ask where it stands — verify with a selector for it and expect {\"expanded\": true} or false — and act on that answer."
+      }
+    }
     if let refound {
       // Say it plainly: the caller's number is stale from here on, and the
       // reason its next read looks renumbered is this, not a phantom.
@@ -731,8 +1102,22 @@ public final class Dispatcher {
     if snapshots(app).contains(where: { $0.nodes.contains { $0.id == id } }) { return id }
     guard let want = idMemory[app]?[id], Self.identifiable(want) else { throw BridgeError.noSuchElement(id) }
     let matches = snap.nodes.filter { Self.sameControl($0.attributes, want) }
-    guard matches.count == 1 else { throw BridgeError.noSuchElement(id) }
+    // These two used to be one error, and they are not one problem. "Gone" is
+    // repaired by reading again. "Several now match" is not — reading again
+    // produces the same several, and the caller has to say which it meant. A
+    // caller told the wrong one of these retries the thing that cannot work.
+    if matches.isEmpty { throw BridgeError.elementGone(id, Self.describe(want)) }
+    guard matches.count == 1 else { throw BridgeError.ambiguousElement(id, Self.describe(want), matches.count) }
     return matches[0].id
+  }
+
+  /// What an id used to name, for an error a caller can act on. Role and title
+  /// only: a value is the part most likely to have changed, and quoting a
+  /// field's old contents back is both unhelpful and a way to leak what was
+  /// typed into an error string.
+  static func describe(_ a: Attributes) -> String {
+    let title = (a.title ?? "").isEmpty ? nil : "\"\(a.title!)\""
+    return [a.role, title].compactMap { $0 }.joined(separator: " ")
   }
 
   /// Only a control with something to match on can be re-found. A bare
@@ -828,6 +1213,7 @@ public final class Dispatcher {
     perApp[Self.filterKey(o)] = snap
     baselines[app] = perApp
     latest[app] = snap
+    generations[app] = (generations[app] ?? 0) + 1
     remember(app, snap)
   }
   /// Every snapshot this app currently has a baseline for, one per filter.
@@ -915,6 +1301,11 @@ public final class Dispatcher {
     if a.count > w.count, a.hasSuffix(w) { try fail("the old text was not replaced") }
   }
 
+  /// Actions whose meaning IS repetition. Nothing else belongs here: the
+  /// guard exists because a model that repeats a dead press repeats it five
+  /// times, and every exemption is a place that can happen again.
+  static let stepping: Set<String> = ["increment", "decrement"]
+
   private func repeatCheck(_ app: String, _ key: String) throws {
     guard lastNoChange[app] == key else { return }
     lastNoChange.removeValue(forKey: app)
@@ -931,6 +1322,65 @@ public final class Dispatcher {
       ?? snapshots(app).lazy.compactMap({ $0.nodes.first(where: { $0.id == id }) }).first
     guard let node, !node.attributes.actions.isEmpty, !node.attributes.actions.contains(action) else { return }
     throw BridgeError.actionFailed("Element \(id) does not offer \"\(action)\"; it offers {\(node.attributes.actions.joined(separator: ","))}. Use one of those, or a different path: the keyboard, or a menu bar command.")
+  }
+
+  /// How many ambiguous matches to show. Enough to tell them apart, few enough
+  /// that the reply stays readable — a list of forty is another way of saying
+  /// nothing.
+  static let maxAmbiguous = 8
+
+  /// How long to wait before believing that a value write did nothing. Set
+  /// from measurement: a browser reports a text control's previous value for
+  /// a few hundred milliseconds after an overwrite.
+  static let staleRecheck: TimeInterval = 0.3
+
+  private enum Check { case met, notMet, unprovable(String) }
+
+  /// One expectation against one resolved element. Anything this cannot prove
+  /// says so rather than guessing — an unprovable expectation is `unknown`,
+  /// never a quiet false.
+  private func check(_ app: String, _ node: SnapshotNode, _ key: String, _ want: Any) throws -> Check {
+    switch key {
+    case "expanded":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.expanded must be true or false.") }
+      // Presence from the names list, never from the raw value — see stateFlag.
+      guard let has = try backend.stateFlag(app: app, id: node.id, attribute: "AXExpanded") else {
+        return .unprovable("Element \(node.id) exposes no open/closed state at all, so whether it is expanded cannot be proved from here.")
+      }
+      return has == want ? .met : .notMet
+    case "selected":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.selected must be true or false.") }
+      return node.attributes.selected == want ? .met : .notMet
+    case "focused":
+      guard let want = want as? Bool else { throw BridgeError.badParams("expect.focused must be true or false.") }
+      return node.attributes.focused == want ? .met : .notMet
+    case "value":
+      guard let want = want as? String else { throw BridgeError.badParams("expect.value must be a string.") }
+      return (node.attributes.value ?? "") == want ? .met : .notMet
+    default:
+      throw BridgeError.badParams("Unknown expectation \"\(key)\". Use exists, expanded, selected, focused or value.")
+    }
+  }
+
+  /// Would pressing this again undo what the last press did?
+  static let toggleRoles: Set<String> = ["checkbox", "check box", "disclosure triangle"]
+  private func isToggle(_ app: String, _ id: Int, role: String?) -> Bool {
+    if let role, Self.toggleRoles.contains(role) { return true }
+    return ((try? backend.stateFlag(app: app, id: id, attribute: "AXExpanded")) ?? nil) != nil
+  }
+
+  private func selector(_ p: [String: Any]) throws -> Selector {
+    Selector(
+      role: p["role"] as? String,
+      label: p["label"] as? String,
+      value: p["value"] as? String,
+      action: p["action"] as? String,
+      enabled: p["enabled"] as? Bool,
+      selected: p["selected"] as? Bool,
+      within: p["within"] as? Int,
+      contains: (p["contains"] as? Bool) ?? false,
+      caseInsensitive: (p["caseInsensitive"] as? Bool) ?? false
+    )
   }
 
   private func options(_ p: [String: Any]) -> SnapshotOptions {

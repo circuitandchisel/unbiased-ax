@@ -38,6 +38,21 @@ struct LiveSource: ElementSource {
   static let wanted: [String] = [
     kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute,
     kAXPositionAttribute, kAXSizeAttribute, kAXEnabledAttribute, kAXFocusedAttribute, kAXSelectedAttribute,
+    // The live-region marks. No constants ship for these, and they ride along
+    // in the same multi-attribute fetch, so they cost no extra IPC per element.
+    //
+    // AXARIALive is the canonical name and is asked for first. Measured
+    // 2026-09-18: Chrome does not answer it at all — every element returns the
+    // error placeholder. It DOES answer AXARIARelevant, and only for a live
+    // region: on a test page one text node came back "additions text" and
+    // every other returned a placeholder.
+    //
+    // AXARIAAtomic looked like a third signal and is deliberately NOT here. It
+    // is listed among a live region's attribute NAMES, but this call answers it
+    // for every element alike, as boolean false — so testing it marked all
+    // sixteen text nodes on the page as announcing. An attribute an element
+    // "has" and one this call will answer are not the same set.
+    "AXARIALive", "AXARIARelevant",
   ]
 
   func identity(of node: AXElement) -> AnyHashable { node }
@@ -93,6 +108,12 @@ struct LiveSource: ElementSource {
                          // An element that does not report AXEnabled is not disabled.
                          actions: actions, enabled: bool(7, absent: true), focused: bool(8), selected: bool(9))
     out.geometryKnown = sizeValue != nil
+    // "off" is the ARIA way of saying a region does NOT announce, so it is the
+    // one value that means no; anything else — polite, assertive — means the
+    // element speaks when it changes. AXARIARelevant says WHAT it announces
+    // ("additions text"), which only a live region has to say at all.
+    let live = (str(10) ?? "").lowercased()
+    out.announces = (!live.isEmpty && live != "off") || !(str(11) ?? "").isEmpty
     return out
   }
 

@@ -35,12 +35,40 @@ public struct WindowInfo: Codable, Equatable {
   }
 }
 
+/// How much an action's outcome can be believed.
+///
+/// Reading back the value you just wrote is the accessibility layer confirming
+/// itself; when it is stale it agrees with its own stale answer, which is how
+/// four separate measurements came out wrong. What the APP did in response —
+/// a panel opening, a row appearing, a control enabling — comes from the app
+/// and does not share that lag.
+public enum Confidence: String {
+  /// Something other than the target moved. The app reacted; it received the
+  /// action. This is the only outcome worth calling confirmed.
+  case confirmed
+  /// The target now reads as asked, and nothing else moved. Probably fine,
+  /// possibly a stale read agreeing with itself. Proceed, and say so.
+  case unverified
+  /// Neither the target nor anything else moved. Whatever was sent did not
+  /// arrive; sending it again will not change that.
+  case quiet
+}
+
 public enum BridgeError: Error {
   case badParams(String)
   case unknownMethod(String)
   case notTrusted
   case noSuchApp(String)
   case noSuchElement(Int)
+  /// The id was issued once, the control it named is gone, and nothing in the
+  /// latest snapshot looks like it any more.
+  case elementGone(Int, String)
+  /// The id was issued once, the control it named is gone, and SEVERAL things
+  /// now match its description. Refusing is the point — picking one would act
+  /// on something the caller never saw. Kept apart from noSuchElement because
+  /// the repair is different: "read again" fixes a stale id, and does nothing
+  /// for an ambiguous one, where the caller has to say which it meant.
+  case ambiguousElement(Int, String, Int)
   case noSuchWindow(Int)
   case actionFailed(String)
   case timeout(String)
@@ -53,6 +81,8 @@ public enum BridgeError: Error {
     case .notTrusted: return "not_trusted"
     case .noSuchApp: return "no_such_app"
     case .noSuchElement: return "no_such_element"
+    case .elementGone: return "element_gone"
+    case .ambiguousElement: return "ambiguous_element"
     case .noSuchWindow: return "no_such_window"
     case .actionFailed: return "action_failed"
     case .timeout: return "timeout"
@@ -68,6 +98,10 @@ public enum BridgeError: Error {
       return "This process has not been granted Accessibility access. System Settings > Privacy & Security > Accessibility: enable it, then restart."
     case .noSuchApp(let a): return "No running app matches \"\(a)\". Call apps to list them."
     case .noSuchElement(let id): return "No element \(id) in the last snapshot of this app. Call tree again."
+    case .elementGone(let id, let was):
+      return "Element \(id) was \(was). It is gone from this app's latest snapshot and nothing there matches it any more. Read the app again: if the control is still on screen it has a new id."
+    case .ambiguousElement(let id, let was, let n):
+      return "Element \(id) was \(was). \(n) controls now match that description, so nothing was done rather than guess which one was meant. Read the app again and name the one you want — reading again will NOT resolve this on its own."
     case .noSuchWindow(let id): return "No window \(id). Call windows."
     case .actionFailed(let m): return m
     case .timeout(let m): return "The app did not respond: \(m)"
@@ -115,7 +149,20 @@ public struct PointerOutcome {
   public var landed: [CGPoint]
   public var skipped: Int
   public var blocked: PointerBlock?
-  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil) { self.landed = landed; self.skipped = skipped; self.blocked = blocked }
+  /// The pointer was put back where the user left it once the path was done.
+  public var pointerReturned: Bool
+  /// The user's pointer was used at all. False is the good case: the clicks
+  /// were delivered to the point without the cursor ever going there.
+  public var movedPointer: Bool
+  /// Delivered to the window itself, so nothing was raised and the window
+  /// stayed on whatever Space it was on.
+  public var backgrounded: Bool
+  public init(landed: [CGPoint], skipped: Int = 0, blocked: PointerBlock? = nil,
+              pointerReturned: Bool = false, movedPointer: Bool = true, backgrounded: Bool = false) {
+    self.landed = landed; self.skipped = skipped; self.blocked = blocked
+    self.pointerReturned = pointerReturned; self.movedPointer = movedPointer
+    self.backgrounded = backgrounded
+  }
 }
 
 /// One command in the app's menu bar, read without opening a menu.
@@ -174,6 +221,18 @@ public protocol Backend: AnyObject {
   /// after every action only un-does the one raise that made the app readable,
   /// so the next read finds it gone and raises again — a switch per action.
   /// Raise once, work there, and leave the user where the work is.
+  /// A boolean state an element may or may not expose — AXExpanded and its
+  /// kind. nil means the element does not list the attribute AT ALL, which is
+  /// a different thing from false.
+  ///
+  /// That distinction is the whole reason this exists. Measured twice on
+  /// Chrome, 2026-09-18: a value read answers 0 for elements that have no such
+  /// attribute, so "AXExpanded = 0" cannot tell a closed accordion from a
+  /// control with no open/closed state at all. The same trap caught AXARIAAtomic,
+  /// which is listed on a live region and answered false for every element
+  /// alike. Presence has to come from the attribute-NAMES list; only then does
+  /// the value mean anything.
+  func stateFlag(app: String, id: Int, attribute: String) throws -> Bool?
   func perform(app: String, id: Int, action: String, keepFront: Bool) throws
   /// A named key, delivered to the app as a real key event. For what the
   /// Accessibility API has no verb for: committing an omnibox, dismissing a
@@ -213,6 +272,11 @@ public protocol Backend: AnyObject {
   /// element's reported bounds can lag what the app is drawing, and the only
   /// authority on what is actually at a point is the app's own hit test.
   func pointerHit(app: String, id: Int, point: (x: Double, y: Double)) throws -> HitRelation
+  /// Make the app's window actually be where its coordinates say, bringing it
+  /// forward if it is on another Space. Returns whether it had to. Called
+  /// before the aim checks, because those hit-test the real screen: a window
+  /// the user cannot see answers them with whatever is in front of it.
+  func prepareForPointer(app: String) throws -> Bool
   /// The element holding keyboard focus, as its role and title, or nil when the
   /// app reports none. Typed text goes wherever this is.
   func focusedControl(app: String) throws -> (role: String, title: String?)?
@@ -230,6 +294,36 @@ public protocol Backend: AnyObject {
   /// turned a `180` into `120180`, and seventeen later actions were computed
   /// on top of the wrong number. nil when the element exposes no value.
   func value(app: String, id: Int) throws -> String?
+  /// Ask the app to TELL us when this element's value changes, and wait for it
+  /// to say so. Returns nil when the element cannot be observed at all, which
+  /// is different from observing it and hearing nothing.
+  ///
+  /// The only signal here that is not a read. Everything else asks the
+  /// accessibility layer what happened, and that layer can answer with the
+  /// state from before the action; a notification is posted by the app when
+  /// the change occurs and cannot describe a moment that has not happened.
+  func awaitValueChange(app: String, id: Int, timeout: TimeInterval) throws -> Bool?
+  /// Whether the element says its value can be written at all.
+  ///
+  /// The point of asking is to replace a hardcoded list of control types that
+  /// refuse writes with a question put to the control. Whether the answer can
+  /// be believed is a separate matter and has to be measured per platform: a
+  /// control that reports its value settable and then discards the write is
+  /// worse than one that says no.
+  func valueSettable(app: String, id: Int) throws -> Bool
+  /// Select text INSIDE one element, so the typing that follows replaces it.
+  ///
+  /// `text` nil selects the whole value. This exists because the usual way to
+  /// clear a field — click it, then command+a — is not scoped to the field: it
+  /// is scoped to whatever has focus, and when focus is not where the caller
+  /// believes, command+a selects the document. Measured once in a drawing app,
+  /// where it selected every layer and the delete that followed cleared the
+  /// canvas mid-task. A range set on the element cannot do that, because the
+  /// element is named rather than assumed.
+  ///
+  /// Returns how many characters ended up selected, so a caller can tell a
+  /// selection that happened from one that silently did not.
+  func selectText(app: String, id: Int, text: String?) throws -> Int
   func raise(app: String, windowId: Int?) throws
   /// A picture of one window, PNG, wherever the window is — another Space
   /// included — without raising anything. Measured 2026-09-05: Maps' window
