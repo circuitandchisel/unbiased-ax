@@ -678,7 +678,7 @@ public final class Dispatcher {
       // Bring the window to where its coordinates are BEFORE asking what is
       // under them: a window on another Space answers the hit test with
       // whatever is in front of it, which used to read as "the element moved".
-      let raisedForPointer = try backend.prepareForPointer(app: app)
+      let raisedForPointer = try backend.prepareForPointer(app: app, id: anchor, modifiers: try modifierList(p), clicks: clicks)
       let toCheck = hold ? Array(aim.prefix(1)) : aim
       for (i, pt) in toCheck.enumerated() {
         let rel = try backend.pointerHit(app: app, id: anchor, point: pt)
