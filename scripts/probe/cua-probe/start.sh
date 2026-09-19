@@ -22,7 +22,13 @@ disown || true
 
 if [ "${1:-}" != "--no-web" ]; then
   ELECTRON=""
-  for c in /Users/naveen/Projects/Work/unbiased-app/node_modules/.bin/electron "$(command -v electron || true)"; do
+  # Candidates in order: an explicit override, a checked-out desktop app beside
+  # this repo, then whatever is on PATH. No absolute path to anyone's home
+  # directory: the old first candidate only existed on one machine, and on any
+  # other it silently fell through to PATH.
+  for c in "${ELECTRON_BIN:-}" \
+           "${UNBIASED_APP_DIR:-$PWD/../unbiased-app}/node_modules/.bin/electron" \
+           "$(command -v electron || true)"; do
     [ -n "$c" ] && [ -x "$c" ] && ELECTRON="$c" && break
   done
   if [ -n "$ELECTRON" ]; then
